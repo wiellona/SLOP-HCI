@@ -1,32 +1,33 @@
 # app/services/voice_inference.py
 
 import io
+import os
+import tempfile
 import time
 import uuid
-import numpy as np
-import whisper
-import torch
 from typing import AsyncGenerator
 
+import numpy as np
 import structlog
+import torch
+import whisper
 
-from app.models.whisper.loader import WhisperLoader
 from app.core.config import get_settings
+from app.models.whisper.loader import WhisperLoader
 from app.schemas.voice import VoiceInferenceResult
 
 logger = structlog.get_logger()
 
 
 class VoiceInferenceService:
-    """
-    Handles speech-to-text inference using Whisper.
+    """Handles speech-to-text inference using Whisper.
 
     Supports:
       - Single-chunk transcription (short utterances)
       - Streaming mode (chunked audio accumulation)
     """
 
-    SAMPLE_RATE = 16_000   # Whisper selalu mengekspektasi 16kHz mono
+    SAMPLE_RATE = 16_000  # Whisper selalu mengekspektasi 16kHz mono
 
     def __init__(self):
         self.model = WhisperLoader.get_model()
@@ -38,8 +39,7 @@ class VoiceInferenceService:
         session_token: str,
         inference_id: str | None = None,
     ) -> VoiceInferenceResult:
-        """
-        Transcribe a single audio chunk (WAV bytes at 16kHz mono).
+        """Transcribe a single audio chunk (WAV bytes at 16kHz mono).
 
         Args:
             audio_bytes: Raw WAV audio bytes
@@ -60,11 +60,11 @@ class VoiceInferenceService:
         # Jalankan Whisper inference
         result = self.model.transcribe(
             audio_array,
-            language=self.settings.whisper_language,   # "id" untuk Bahasa Indonesia
+            language=self.settings.whisper_language,  # "id" untuk Bahasa Indonesia
             task="transcribe",
             fp16=torch.cuda.is_available(),
+            condition_on_previous_text=False,  # Lebih baik untuk ucapan pendek
             without_timestamps=True,
-            condition_on_previous_text=False,          # Lebih baik untuk ucapan pendek
         )
 
         latency_ms = int((time.monotonic() - start_time) * 1000)
@@ -93,8 +93,9 @@ class VoiceInferenceService:
         audio_chunks: list[bytes],
         session_token: str,
     ) -> AsyncGenerator[str, None]:
-        """
-        Streaming transcription: menghasilkan kata parsial seiring proses decoding.
+        """Streaming transcription: menghasilkan kata parsial seiring proses
+
+        decoding.
         """
         combined = b"".join(audio_chunks)
         audio_array = self._bytes_to_array(combined)
@@ -114,15 +115,37 @@ class VoiceInferenceService:
                 accumulated += " " + segment_text
                 yield accumulated.strip()
 
-    def _bytes_to_array(self, audio_bytes: bytes) -> np.ndarray:
-        """Mengonversi WAV bytes ke float32 numpy array pada 16kHz."""
-        with io.BytesIO(audio_bytes) as buf:
-            audio = whisper.load_audio(buf)
-        return audio   # Berbentuk float32 dan dinormalisasi ke [-1, 1]
+    def _bytes_to_array(self, audio_bytes_or_buf) -> np.ndarray:
+        """Mengubah objek audio bytes atau BytesIO menjadi numpy array yang
+
+        valid untuk Whisper.
+        """
+        # 1. Ambal data bytes mentah baik dari objek BytesIO maupun bytes langsung
+        if isinstance(audio_bytes_or_buf, io.BytesIO):
+            data = audio_bytes_or_buf.getvalue()
+        else:
+            data = audio_bytes_or_buf
+
+        # 2. Bikin file temporary fisik di disk agar bisa dibaca oleh ffmpeg bawaan Whisper
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav"
+        ) as tmp_file:
+            tmp_file.write(data)
+            tmp_path = tmp_file.name
+
+        try:
+            # 3. Umpankan string path file temporary ke Whisper
+            audio_array = whisper.load_audio(tmp_path)
+        finally:
+            # 4. Hapus kembali file temporary agar tidak menumpuk memenuhi harddisk
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        return audio_array
 
     def _extract_confidence(self, whisper_result: dict) -> float:
-        """
-        Mengekstrak confidence proxy dari nilai avg_logprob milik Whisper.
+        """Mengekstrak confidence proxy dari nilai avg_logprob milik Whisper.
+
         Memetakan nilai logprob ke dalam rentang [0.0, 1.0].
         """
         segments = whisper_result.get("segments", [])
