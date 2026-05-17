@@ -1,157 +1,159 @@
-# app/services/voice_inference.py
-
-import io
-import os
-import tempfile
+import asyncio
 import time
-import uuid
-from typing import AsyncGenerator
-
 import numpy as np
-import structlog
-import torch
-import whisper
+import io
+from loguru import logger
+import soundfile as sf
 
-from app.core.config import get_settings
-from app.models.whisper.loader import WhisperLoader
 from app.schemas.voice import VoiceInferenceResult
 
-logger = structlog.get_logger()
-
-
 class VoiceInferenceService:
-    """Handles speech-to-text inference using Whisper.
-
-    Supports:
-      - Single-chunk transcription (short utterances)
-      - Streaming mode (chunked audio accumulation)
-    """
-
-    SAMPLE_RATE = 16_000  # Whisper selalu mengekspektasi 16kHz mono
-
-    def __init__(self):
-        self.model = WhisperLoader.get_model()
-        self.settings = get_settings()
-
+    def __init__(self, model_name: str = "base"):
+        self.model_name = model_name
+        self.model = None
+        self.load_model()
+    
+    def load_model(self):
+        """Load Whisper model"""
+        try:
+            logger.info(f"Loading Whisper model: {self.model_name}")
+            
+            import torch
+            import whisper
+            
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device}")
+            
+            self.model = whisper.load_model(self.model_name, device=device)
+            logger.info("Whisper model loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {e}")
+            raise
+    
     async def transcribe_chunk(
         self,
         audio_bytes: bytes,
         session_token: str,
-        inference_id: str | None = None,
+        inference_id: str,
     ) -> VoiceInferenceResult:
-        """Transcribe a single audio chunk (WAV bytes at 16kHz mono).
-
-        Args:
-            audio_bytes: Raw WAV audio bytes
-            session_token: Conversation session identifier
-            inference_id: Optional ID to link streaming events
-
-        Returns:
-            VoiceInferenceResult with transcription and confidence
-        """
-        if inference_id is None:
-            inference_id = str(uuid.uuid4())
-
-        start_time = time.monotonic()
-
-        # Decode audio ke numpy float32 array
-        audio_array = self._bytes_to_array(audio_bytes)
-
-        # Jalankan Whisper inference
-        result = self.model.transcribe(
-            audio_array,
-            language=self.settings.whisper_language,  # "id" untuk Bahasa Indonesia
-            task="transcribe",
-            fp16=torch.cuda.is_available(),
-            condition_on_previous_text=False,  # Lebih baik untuk ucapan pendek
-            without_timestamps=True,
-        )
-
-        latency_ms = int((time.monotonic() - start_time) * 1000)
-        text = result["text"].strip()
-        confidence = self._extract_confidence(result)
-
-        logger.info(
-            "Voice transcription complete",
-            session=session_token,
-            text_preview=text[:50],
-            confidence=confidence,
-            latency_ms=latency_ms,
-        )
-
-        return VoiceInferenceResult(
-            inference_id=inference_id,
-            session_token=session_token,
-            raw_prediction_text=text,
-            confidence_score=confidence,
-            model_version=f"whisper-{self.settings.whisper_model_size}",
-            inference_latency_ms=latency_ms,
-        )
-
-    async def transcribe_streaming(
-        self,
-        audio_chunks: list[bytes],
-        session_token: str,
-    ) -> AsyncGenerator[str, None]:
-        """Streaming transcription: menghasilkan kata parsial seiring proses
-
-        decoding.
-        """
-        combined = b"".join(audio_chunks)
-        audio_array = self._bytes_to_array(combined)
-
-        result = self.model.transcribe(
-            audio_array,
-            language=self.settings.whisper_language,
-            task="transcribe",
-            fp16=torch.cuda.is_available(),
-            without_timestamps=False,
-        )
-
-        accumulated = ""
-        for segment in result.get("segments", []):
-            segment_text = segment["text"].strip()
-            if segment_text:
-                accumulated += " " + segment_text
-                yield accumulated.strip()
-
-    def _bytes_to_array(self, audio_bytes_or_buf) -> np.ndarray:
-        """Mengubah objek audio bytes atau BytesIO menjadi numpy array yang
-
-        valid untuk Whisper.
-        """
-        # 1. Ambal data bytes mentah baik dari objek BytesIO maupun bytes langsung
-        if isinstance(audio_bytes_or_buf, io.BytesIO):
-            data = audio_bytes_or_buf.getvalue()
-        else:
-            data = audio_bytes_or_buf
-
-        # 2. Bikin file temporary fisik di disk agar bisa dibaca oleh ffmpeg bawaan Whisper
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=".wav"
-        ) as tmp_file:
-            tmp_file.write(data)
-            tmp_path = tmp_file.name
-
+        """Transcribe audio chunk using memory buffer (no temp files)"""
+        start_time = time.time()
+        
         try:
-            # 3. Umpankan string path file temporary ke Whisper
-            audio_array = whisper.load_audio(tmp_path)
-        finally:
-            # 4. Hapus kembali file temporary agar tidak menumpuk memenuhi harddisk
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-        return audio_array
-
-    def _extract_confidence(self, whisper_result: dict) -> float:
-        """Mengekstrak confidence proxy dari nilai avg_logprob milik Whisper.
-
-        Memetakan nilai logprob ke dalam rentang [0.0, 1.0].
-        """
-        segments = whisper_result.get("segments", [])
-        if not segments:
-            return 0.5
-
-        avg_logprob = np.mean([s.get("avg_logprob", -1.0) for s in segments])
-        confidence = float(np.exp(np.clip(avg_logprob, -5.0, 0.0)))
-        return round(confidence, 4)
+            logger.info(f"Processing audio: {len(audio_bytes)} bytes")
+            
+            # Convert bytes to numpy array using soundfile
+            audio_buffer = io.BytesIO(audio_bytes)
+            
+            try:
+                # Read audio data
+                data, samplerate = sf.read(audio_buffer)
+                logger.info(f"Audio loaded with soundfile: sample_rate={samplerate}, shape={data.shape}")
+                
+            except Exception as e:
+                logger.error(f"Soundfile failed to read: {e}")
+                # Try with wavio as fallback
+                try:
+                    import wavio
+                    wav = wavio.read(audio_buffer)
+                    data = wav.data.astype(np.float32) / 32768.0
+                    samplerate = wav.rate
+                    logger.info(f"Audio loaded with wavio: sample_rate={samplerate}, shape={data.shape}")
+                except Exception as e2:
+                    logger.error(f"Wavio also failed: {e2}")
+                    raise ValueError(f"Cannot read audio file: {e}")
+            
+            # Ensure mono
+            if len(data.shape) > 1:
+                data = np.mean(data, axis=1)
+                logger.info(f"Converted to mono, new shape: {data.shape}")
+            
+            duration = len(data) / samplerate
+            logger.info(f"Audio info: sample_rate={samplerate}, duration={duration:.2f}s, samples={len(data)}")
+            
+            if duration < 0.5:
+                logger.warning(f"Audio too short: {duration:.2f}s")
+                return VoiceInferenceResult(
+                    raw_prediction_text="",
+                    confidence_score=0.0,
+                    model_version=self.model_name,
+                    inference_latency_ms=int((time.time() - start_time) * 1000),
+                    error_message="Audio terlalu pendek (minimal 0.5 detik)"
+                )
+            
+            # Resample to 16kHz if needed (Whisper expects 16kHz)
+            if samplerate != 16000:
+                logger.info(f"Resampling from {samplerate}Hz to 16000Hz")
+                import torch
+                import torchaudio
+                
+                # Convert to tensor
+                audio_tensor = torch.from_numpy(data).float()
+                
+                # Add channel dimension if needed
+                if len(audio_tensor.shape) == 1:
+                    audio_tensor = audio_tensor.unsqueeze(0)
+                
+                # Resample
+                resampler = torchaudio.transforms.Resample(samplerate, 16000)
+                audio_tensor = resampler(audio_tensor)
+                
+                # Convert back to numpy and remove channel dimension
+                data = audio_tensor.squeeze().numpy()
+                samplerate = 16000
+                logger.info(f"Resampled to {samplerate}Hz, new shape: {data.shape}")
+            
+            # Normalize audio
+            if np.abs(data).max() > 0:
+                data = data / np.abs(data).max()
+            
+            logger.info(f"Running Whisper transcription...")
+            
+            # Run transcription in thread pool
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe(
+                    data,
+                    language="id",
+                    task="transcribe",
+                    verbose=False,
+                    fp16=False,
+                    temperature=0.0
+                )
+            )
+            
+            latency_ms = (time.time() - start_time) * 1000
+            transcribed_text = result["text"].strip()
+            
+            logger.info(f"Transcription successful: '{transcribed_text}' (latency: {latency_ms:.0f}ms)")
+            
+            if not transcribed_text:
+                logger.warning("No text detected in audio")
+                return VoiceInferenceResult(
+                    raw_prediction_text="",
+                    confidence_score=0.0,
+                    model_version=self.model_name,
+                    inference_latency_ms=int(latency_ms),
+                    error_message="Tidak ada suara terdeteksi"
+                )
+            
+            return VoiceInferenceResult(
+                raw_prediction_text=transcribed_text,
+                confidence_score=0.9,
+                model_version=self.model_name,
+                inference_latency_ms=int(latency_ms),
+                error_message=None
+            )
+            
+        except Exception as e:
+            logger.error(f"Transcription error: {e}", exc_info=True)
+            latency_ms = (time.time() - start_time) * 1000
+            return VoiceInferenceResult(
+                raw_prediction_text="",
+                confidence_score=0.0,
+                model_version=self.model_name,
+                inference_latency_ms=int(latency_ms),
+                error_message=str(e)
+            )

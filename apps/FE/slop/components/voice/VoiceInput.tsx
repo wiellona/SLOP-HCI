@@ -1,105 +1,101 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { Mic, MicOff, Loader2 } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { Mic, MicOff } from 'lucide-react';
 
 interface VoiceInputProps {
   onTranscript: (text: string, confidence: number) => void;
-  onError?: (error: string) => void;
+  onError: (error: string) => void;
   disabled?: boolean;
   buttonSize?: number;
+  sessionToken?: string;
 }
 
-export function VoiceInput({ 
-  onTranscript, 
-  onError, 
+export function VoiceInput({
+  onTranscript,
+  onError,
   disabled = false,
-  buttonSize = 24 
+  buttonSize = 20,
+  sessionToken,
 }: VoiceInputProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
-  const startRecording = useCallback(async () => {
+  const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      
-      recorder.ondataavailable = (event) => {
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          setAudioChunks(prev => [...prev, event.data]);
+          audioChunksRef.current.push(event.data);
         }
       };
-      
-      recorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-        await sendToSTT(audioBlob);
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        await sendAudioToServer(audioBlob);
         
-        // Clean up
+        // Stop all tracks
         stream.getTracks().forEach(track => track.stop());
-        setAudioChunks([]);
       };
-      
-      recorder.start(100); // Collect data in 100ms chunks
-      setMediaRecorder(recorder);
+
+      mediaRecorder.start(1000); // Collect data in 1-second chunks
       setIsRecording(true);
     } catch (err) {
-      console.error('Failed to start recording:', err);
-      onError?.('Microphone access denied. Please check permissions.');
-    }
-  }, [audioChunks, onError]);
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.stop();
-      setIsRecording(false);
-      setIsProcessing(true);
-      setMediaRecorder(null);
-    }
-  }, [mediaRecorder, isRecording]);
-
-  const sendToSTT = async (audioBlob: Blob) => {
-    const formData = new FormData();
-    formData.append('audio', audioBlob, 'recording.wav');
-
-    try {
-      const response = await fetch('http://localhost:8000/v1/voice/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`STT failed: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      
-      if (result.text && result.text.trim()) {
-        onTranscript(result.text, result.confidence);
-      } else {
-        onError?.('No speech detected. Please try again.');
-      }
-    } catch (err) {
-      console.error('STT error:', err);
-      onError?.('Failed to transcribe audio. Please check if ML service is running.');
-    } finally {
-      setIsProcessing(false);
+      console.error('Error accessing microphone:', err);
+      onError('Tidak dapat mengakses mikrofon');
     }
   };
 
-  // Clean up on unmount
-  useEffect(() => {
-    return () => {
-      if (mediaRecorder && isRecording) {
-        mediaRecorder.stop();
-      }
-    };
-  }, [mediaRecorder, isRecording]);
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setIsProcessing(true);
+    }
+  };
 
-  const handleClick = () => {
-    if (disabled || isProcessing) return;
-    
+    const sendAudioToServer = async (audioBlob: Blob) => {
+        try {
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'recording.wav');
+            if (sessionToken) {
+            formData.append('session_token', sessionToken);
+            }
+
+            const response = await fetch('http://localhost:8000/v1/voice/transcribe', {
+            method: 'POST',
+            body: formData,
+            });
+
+            if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `HTTP ${response.status}`);
+            }
+
+            const result = await response.json();
+            console.log('Transcription result:', result);
+            
+            if (result.text && result.text.trim()) {
+            onTranscript(result.text, result.confidence || 0.9);
+            } else {
+            onError('Tidak ada suara terdeteksi');
+            }
+        } catch (err) {
+            console.error('Transcription error:', err);
+            onError(err instanceof Error ? err.message : 'Gagal memproses suara');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+  const toggleRecording = () => {
+    if (disabled) return;
     if (isRecording) {
       stopRecording();
     } else {
@@ -109,39 +105,33 @@ export function VoiceInput({
 
   return (
     <button
-      onClick={handleClick}
+      onClick={toggleRecording}
       disabled={disabled || isProcessing}
+      className="retro-btn"
       style={{
-        width: 46,
-        flexShrink: 0,
-        background: isRecording ? '#b85c4a' : (isProcessing ? '#a08060' : '#efb36d'),
-        border: '2px solid #2b1d1d',
-        boxShadow: isRecording ? 'none' : '3px 3px 0 #2b1d1d',
-        cursor: (disabled || isProcessing) ? 'not-allowed' : 'pointer',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transform: isRecording ? 'translate(3px,3px)' : 'none',
-        transition: 'all 0.1s',
+        width: 46,
+        flexShrink: 0,
+        padding: 0,
+        background: isRecording ? '#e05528' : undefined,
+        color: isRecording ? '#fff8f0' : undefined,
       }}
     >
       {isProcessing ? (
-        <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+        <div style={{ width: buttonSize, height: buttonSize, border: '2px solid #fff8f0', borderTop: '2px solid transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
       ) : isRecording ? (
-        <MicOff size={buttonSize} color="#fff8f0" />
+        <MicOff size={buttonSize} />
       ) : (
-        <Mic size={buttonSize} color="#2b1d1d" />
+        <Mic size={buttonSize} />
       )}
+      <style jsx>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
     </button>
   );
 }
-
-// Add spinning animation CSS
-const style = document.createElement('style');
-style.textContent = `
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-`;
-document.head.appendChild(style);

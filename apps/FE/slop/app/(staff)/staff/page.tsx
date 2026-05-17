@@ -620,6 +620,7 @@ export default function StaffPage() {
                     onError={handleVoiceError}
                     disabled={!isActive}
                     buttonSize={18}
+                    sessionToken={currentSession?.session_token}
                   />
                   <div
                     className="retro-inset"

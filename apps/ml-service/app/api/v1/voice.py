@@ -1,108 +1,71 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
-import whisper
-import tempfile
-import os
-import torch
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import Optional
-import structlog
+from loguru import logger
+from pydantic import BaseModel
 
-logger = structlog.get_logger()
-
+# Create router
 router = APIRouter()
 
-# Load Whisper model once at startup
-_model = None
+# Response model
+class TranscriptionResponse(BaseModel):
+    text: str
+    confidence: float
+    latency_ms: int
+    error: Optional[str] = None
 
-def get_model():
-    global _model
-    if _model is None:
-        # Use small model for faster inference, or base for better accuracy
-        _model = whisper.load_model("base")
-        logger.info("Whisper model loaded")
-    return _model
+# We'll initialize the service lazily to avoid import issues
+_voice_service = None
 
-@router.post("/transcribe")
-async def transcribe_audio(audio: UploadFile = File(...)):
+def get_voice_service():
+    global _voice_service
+    if _voice_service is None:
+        from app.services.voice_inference import VoiceInferenceService
+        _voice_service = VoiceInferenceService(model_name="base")
+    return _voice_service
+
+@router.post("/transcribe", response_model=TranscriptionResponse)
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    session_token: Optional[str] = Form(None),
+):
     """
-    Transcribe audio file to text using Whisper.
-    
-    Accepts: WAV, MP3, M4A, OGG, FLAC formats
-    Returns: transcribed text with confidence score
+    Transcribe audio file to text using Whisper
     """
-    if not audio.filename:
-        raise HTTPException(status_code=400, detail="No audio file provided")
-    
-    # Save uploaded file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        content = await audio.read()
-        tmp_file.write(content)
-        tmp_path = tmp_file.name
-    
     try:
-        # Load and transcribe
-        model = get_model()
-        result = model.transcribe(
-            tmp_path,
-            language="id",  # Bahasa Indonesia
-            task="transcribe",
-            fp16=torch.cuda.is_available(),
+        # Read audio file
+        audio_bytes = await audio.read()
+        
+        if len(audio_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+        
+        logger.info(f"Received audio file: {audio.filename}, size: {len(audio_bytes)} bytes, content_type: {audio.content_type}")
+        
+        # Get service and transcribe
+        service = get_voice_service()
+        result = await service.transcribe_chunk(
+            audio_bytes=audio_bytes,
+            session_token=session_token or "unknown",
+            inference_id="transcribe"
         )
         
-        text = result["text"].strip()
-        confidence = calculate_confidence(result)
-        
-        logger.info(
-            "Voice transcribed",
-            text_preview=text[:50],
-            confidence=confidence,
-            duration=result.get("segments", [{}])[-1].get("end", 0) if result.get("segments") else 0
+        # Return response even if there's an error in the result
+        return TranscriptionResponse(
+            text=result.raw_prediction_text,
+            confidence=result.confidence_score,
+            latency_ms=result.inference_latency_ms,
+            error=result.error_message
         )
-        
-        return JSONResponse({
-            "success": True,
-            "text": text,
-            "confidence": confidence,
-            "language": result.get("language", "id"),
-        })
         
     except Exception as e:
-        logger.error(f"Transcription error: {e}")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
-    finally:
-        # Clean up temp file
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        logger.error(f"Transcription endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.post("/transcribe/stream")
-async def transcribe_streaming(audio: UploadFile = File(...)):
-    """
-    Streaming transcription endpoint - returns partial results as they become available.
-    For true streaming, use WebSocket instead.
-    """
-    # For now, same as regular transcribe
-    return await transcribe_audio(audio)
-
-
-def calculate_confidence(whisper_result: dict) -> float:
-    """Calculate confidence score from Whisper result."""
-    segments = whisper_result.get("segments", [])
-    if not segments:
-        return 0.5
-    
-    avg_logprob = 0
-    total_len = 0
-    
-    for segment in segments:
-        logprob = segment.get("avg_logprob", -1.0)
-        length = len(segment.get("text", ""))
-        avg_logprob += logprob * length
-        total_len += length
-    
-    if total_len > 0:
-        avg_logprob /= total_len
-        confidence = float(torch.exp(torch.tensor(avg_logprob)).item())
-        return round(min(max(confidence, 0.0), 1.0), 4)
-    
-    return 0.5
+@router.get("/health")
+async def voice_health():
+    """Check if voice service is working"""
+    try:
+        service = get_voice_service()
+        return {"status": "healthy", "model": service.model_name}
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {"status": "unhealthy", "error": str(e)}
