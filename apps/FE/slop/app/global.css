@@ -1,0 +1,407 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap');
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  html {
+    font-size: 16px;
+  }
+
+  body {
+    background: #d8a8b8;
+    color: #3a2b2b;
+    font-family: 'VT323', monospace;
+    image-rendering: pixelated;
+    min-height: 100vh;
+  }
+
+  /* Pixel-perfect scrollbar */
+  ::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f1c7a3;
+    border-left: 2px solid #2b1d1d;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #e58a3a;
+    border: 2px solid #2b1d1d;
+  }
+  ::-webkit-scrollbar-button {
+    background: #efb36d;
+    border: 2px solid #2b1d1d;
+    height: 14px;
+    width: 14px;
+  }
+}
+
+@layer components {
+
+  /* ===== RETRO WINDOW ===== */
+  .retro-window {
+    background: #f4dcc8;
+    border: 2px solid #2b1d1d;
+    box-shadow: 4px 4px 0px #2b1d1d;
+    position: relative;
+  }
+
+  .retro-titlebar {
+    background: linear-gradient(90deg, #f26a3d 0%, #e8552a 100%);
+    border-bottom: 2px solid #2b1d1d;
+    padding: 5px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    letter-spacing: 1px;
+    color: #fff8f0;
+    user-select: none;
+  }
+
+  .retro-titlebar-icon {
+    width: 14px;
+    height: 14px;
+    background: #f4dcc8;
+    border: 2px solid #2b1d1d;
+    margin-right: 6px;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  .retro-titlebar-title {
+    flex: 1;
+    font-size: 17px;
+  }
+
+  /* Window control buttons ([ - ] [ ] [ x ]) */
+  .retro-winctrls {
+    display: flex;
+    gap: 3px;
+  }
+
+  .retro-winctrl {
+    width: 18px;
+    height: 16px;
+    background: #f4dcc8;
+    border: 2px solid #2b1d1d;
+    box-shadow: 1px 1px 0 #2b1d1d;
+    font-size: 11px;
+    font-family: 'VT323', monospace;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    color: #2b1d1d;
+    line-height: 1;
+  }
+
+  .retro-winctrl:hover {
+    background: #e58a3a;
+    color: #fff8f0;
+  }
+
+  .retro-window-content {
+    padding: 10px;
+  }
+
+  /* ===== BUTTON ===== */
+  .retro-btn {
+    background: #efb36d;
+    border: 2px solid #2b1d1d;
+    padding: 6px 14px;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    transition: all 0.05s;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    color: #2b1d1d;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+
+  .retro-btn:hover {
+    background: #e89a4a;
+    transform: translate(1px, 1px);
+    box-shadow: 2px 2px 0px #2b1d1d;
+  }
+
+  .retro-btn:active {
+    transform: translate(3px, 3px);
+    box-shadow: none;
+  }
+
+  .retro-btn:disabled {
+    background: #c8a882;
+    color: #8a7060;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    opacity: 0.7;
+  }
+
+  .retro-btn-primary {
+    background: #f26a3d;
+    color: #fff8f0;
+    border: 2px solid #2b1d1d;
+    padding: 8px 18px;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    transition: all 0.05s;
+    font-family: 'VT323', monospace;
+    font-size: 20px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+
+  .retro-btn-primary:hover {
+    background: #e05528;
+    transform: translate(1px, 1px);
+    box-shadow: 2px 2px 0px #2b1d1d;
+  }
+
+  .retro-btn-primary:active {
+    transform: translate(3px, 3px);
+    box-shadow: none;
+  }
+
+  .retro-btn-primary:disabled {
+    background: #c8866a;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    opacity: 0.6;
+  }
+
+  /* ===== INPUT ===== */
+  .retro-input {
+    width: 100%;
+    background: #fff8f0;
+    border: 2px solid #2b1d1d;
+    padding: 6px 10px;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    color: #2b1d1d;
+    outline: none;
+    box-shadow: inset 2px 2px 0px #d8b39a;
+  }
+
+  .retro-input:focus {
+    background: #fffaf5;
+    box-shadow: inset 2px 2px 0px #d8b39a, 0 0 0 1px #f26a3d;
+  }
+
+  .retro-textarea {
+    width: 100%;
+    background: #fff8f0;
+    border: 2px solid #2b1d1d;
+    padding: 8px 10px;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    color: #2b1d1d;
+    outline: none;
+    box-shadow: inset 2px 2px 0px #d8b39a;
+    resize: none;
+  }
+
+  .retro-textarea:focus {
+    background: #fffaf5;
+  }
+
+  /* ===== CHAT BUBBLES ===== */
+  .retro-chat-customer {
+    background: #f4b26b;
+    border: 2px solid #2b1d1d;
+    padding: 8px 12px;
+    max-width: 80%;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    position: relative;
+  }
+
+  .retro-chat-staff {
+    background: #f6e7db;
+    border: 2px solid #2b1d1d;
+    padding: 8px 12px;
+    max-width: 80%;
+    box-shadow: 3px 3px 0px #2b1d1d;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    position: relative;
+  }
+
+  /* ===== STATUS BADGE ===== */
+  .retro-badge {
+    background: #f26a3d;
+    border: 2px solid #2b1d1d;
+    padding: 2px 8px;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    color: #fff8f0;
+    display: inline-block;
+  }
+
+  .retro-badge-green {
+    background: #6B8C42;
+    border: 2px solid #2b1d1d;
+    padding: 2px 8px;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    color: #fff8f0;
+    display: inline-block;
+  }
+
+  /* ===== PILL / CHIP ===== */
+  .retro-chip {
+    background: #efb36d;
+    border: 2px solid #2b1d1d;
+    padding: 3px 10px;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    cursor: pointer;
+    box-shadow: 2px 2px 0px #2b1d1d;
+    transition: all 0.05s;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #2b1d1d;
+  }
+
+  .retro-chip:hover {
+    background: #e89a4a;
+    transform: translate(1px, 1px);
+    box-shadow: 1px 1px 0px #2b1d1d;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  .retro-progress-track {
+    background: #f8eadf;
+    border: 2px solid #2b1d1d;
+    box-shadow: inset 2px 2px 0px #d8b39a;
+    height: 16px;
+    width: 100%;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .retro-progress-fill {
+    background: repeating-linear-gradient(
+      90deg,
+      #f26a3d 0px,
+      #f26a3d 8px,
+      #e05528 8px,
+      #e05528 16px
+    );
+    height: 100%;
+    transition: width 0.3s;
+  }
+
+  /* ===== SEPARATOR ===== */
+  .retro-sep {
+    border: none;
+    border-top: 2px solid #2b1d1d;
+    margin: 0;
+  }
+
+  /* ===== MENU BAR ===== */
+  .retro-menubar {
+    background: #f4dcc8;
+    border-bottom: 2px solid #2b1d1d;
+    padding: 2px 6px;
+    display: flex;
+    gap: 0;
+    font-family: 'VT323', monospace;
+    font-size: 17px;
+  }
+
+  .retro-menuitem {
+    padding: 2px 10px;
+    cursor: pointer;
+    color: #2b1d1d;
+  }
+
+  .retro-menuitem:hover {
+    background: #f26a3d;
+    color: #fff8f0;
+  }
+
+  /* ===== INSET PANEL ===== */
+  .retro-inset {
+    background: #fff8f0;
+    border: 2px solid #2b1d1d;
+    box-shadow: inset 2px 2px 0px #d8b39a;
+    padding: 10px;
+  }
+
+  /* ===== STATUS BAR ===== */
+  .retro-statusbar {
+    background: #f4dcc8;
+    border-top: 2px solid #2b1d1d;
+    padding: 3px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+  }
+
+  .retro-statusbar-cell {
+    border: 1px inset #2b1d1d;
+    padding: 0 8px;
+    border-right: 2px solid #2b1d1d;
+  }
+
+  /* ===== LABEL ===== */
+  .retro-label {
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    color: #2b1d1d;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  /* ===== BLINKING CURSOR ===== */
+  .retro-cursor::after {
+    content: '_';
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  /* ===== SCAN LINE OVERLAY ===== */
+  .retro-scanlines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      180deg,
+      transparent 0px,
+      transparent 3px,
+      rgba(0,0,0,0.04) 3px,
+      rgba(0,0,0,0.04) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+  }
+}
+
+/* ===== HIGH CONTRAST MODE ===== */
+body.high-contrast {
+  filter: contrast(1.4);
+}
+
+body.high-contrast * {
+  background: black !important;
+  color: white !important;
+  border-color: white !important;
+  box-shadow: none !important;
+}
