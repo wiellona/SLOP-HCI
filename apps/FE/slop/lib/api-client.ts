@@ -26,6 +26,8 @@ interface Staff {
   role: string;
 }
 
+
+
 class ApiClient {
   private token: string | null = null;
   private currentUser: Staff | null = null;
@@ -45,7 +47,6 @@ class ApiClient {
     };
   }
 
-  // Client-side only: Simulate registration
   async register(data: {
     id: string;
     email: string;
@@ -53,7 +54,6 @@ class ApiClient {
     display_name: string;
     role: string;
   }) {
-    // Store user data in localStorage (client-side only)
     const users = JSON.parse(localStorage.getItem('staff_users') || '[]');
     
     // Check if user already exists
@@ -87,8 +87,6 @@ class ApiClient {
     
     return { access_token: this.token, user: this.currentUser };
   }
-
-  // Client-side only: Simulate login
   async login(data: { id: string; password: string }) {
     const users = JSON.parse(localStorage.getItem('staff_users') || '[]');
     const user = users.find((u: any) => u.id === data.id && u.password === data.password);

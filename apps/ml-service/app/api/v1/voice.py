@@ -1,114 +1,108 @@
-# app/api/v1/voice.py
-
-import uuid
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
-import json
-
+from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+import whisper
+import tempfile
+import os
+import torch
+from typing import Optional
 import structlog
 
-from app.services.voice_inference import VoiceInferenceService
-from app.services.socketio_emitter import SocketIOEmitter
-from app.schemas.voice import VoiceInferenceResult
-
 logger = structlog.get_logger()
+
 router = APIRouter()
 
-_voice_service: VoiceInferenceService | None = None
-_emitter: SocketIOEmitter | None = None
+# Load Whisper model once at startup
+_model = None
 
+def get_model():
+    global _model
+    if _model is None:
+        # Use small model for faster inference, or base for better accuracy
+        _model = whisper.load_model("base")
+        logger.info("Whisper model loaded")
+    return _model
 
-def get_voice_service() -> VoiceInferenceService:
-    global _voice_service
-    if _voice_service is None:
-        _voice_service = VoiceInferenceService()
-    return _voice_service
-
-
-def get_emitter() -> SocketIOEmitter:
-    global _emitter
-    if _emitter is None:
-        _emitter = SocketIOEmitter()
-    return _emitter
-
-
-@router.post("/transcribe", response_model=VoiceInferenceResult)
-async def transcribe_audio(
-    audio: UploadFile = File(..., description="WAV audio file at 16kHz mono"),
-    session_token: str = Form(...),
-    inference_id: str | None = Form(None),
-) -> VoiceInferenceResult:
+@router.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
     """
-    Transcribe a single WAV audio chunk.
-    Audio must be 16kHz mono WAV.
-    Returns transcription with confidence score.
+    Transcribe audio file to text using Whisper.
+    
+    Accepts: WAV, MP3, M4A, OGG, FLAC formats
+    Returns: transcribed text with confidence score
     """
-    if not audio.content_type in ("audio/wav", "audio/wave", "audio/x-wav", "audio/webm"):
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported audio format: {audio.content_type}. Use WAV or WebM.",
+    if not audio.filename:
+        raise HTTPException(status_code=400, detail="No audio file provided")
+    
+    # Save uploaded file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        content = await audio.read()
+        tmp_file.write(content)
+        tmp_path = tmp_file.name
+    
+    try:
+        # Load and transcribe
+        model = get_model()
+        result = model.transcribe(
+            tmp_path,
+            language="id",  # Bahasa Indonesia
+            task="transcribe",
+            fp16=torch.cuda.is_available(),
         )
-
-    service = get_voice_service()
-    emitter = get_emitter()
-
-    audio_bytes = await audio.read()
-    inf_id = inference_id or str(uuid.uuid4())
-
-    # Emit inference_started to Node.js
-    await emitter.emit_inference_started(
-        session_token=session_token,
-        inference_id=inf_id,
-        modality="VOICE",
-    )
-
-    result = await service.transcribe_chunk(
-        audio_bytes=audio_bytes,
-        session_token=session_token,
-        inference_id=inf_id,
-    )
-
-    # Emit inference_complete to Node.js
-    await emitter.emit_inference_complete(
-        session_token=session_token,
-        payload={
-            "event": "inference_complete",
-            "inference_id": inf_id,
-            "raw_prediction_text": result.raw_prediction_text,
-            "final_confidence_score": result.confidence_score,
-            "model_version": result.model_version,
-            "inference_latency_ms": result.inference_latency_ms,
-            "occlusion_detected": False,
-        },
-    )
-
-    return result
+        
+        text = result["text"].strip()
+        confidence = calculate_confidence(result)
+        
+        logger.info(
+            "Voice transcribed",
+            text_preview=text[:50],
+            confidence=confidence,
+            duration=result.get("segments", [{}])[-1].get("end", 0) if result.get("segments") else 0
+        )
+        
+        return JSONResponse({
+            "success": True,
+            "text": text,
+            "confidence": confidence,
+            "language": result.get("language", "id"),
+        })
+        
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @router.post("/transcribe/stream")
-async def transcribe_audio_streaming(
-    audio: UploadFile = File(...),
-    session_token: str = Form(...),
-):
+async def transcribe_streaming(audio: UploadFile = File(...)):
     """
-    Pseudo-streaming transcription.
-    Returns Server-Sent Events (SSE) with partial transcriptions as Whisper
-    processes each segment.
+    Streaming transcription endpoint - returns partial results as they become available.
+    For true streaming, use WebSocket instead.
     """
-    service = get_voice_service()
-    audio_bytes = await audio.read()
+    # For now, same as regular transcribe
+    return await transcribe_audio(audio)
 
-    async def event_generator():
-        async for partial_text in service.transcribe_streaming(
-            audio_chunks=[audio_bytes],
-            session_token=session_token,
-        ):
-            data = json.dumps({"partial_text": partial_text})
-            yield f"data: {data}\n\n"
-        yield "data: [DONE]\n\n"
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+def calculate_confidence(whisper_result: dict) -> float:
+    """Calculate confidence score from Whisper result."""
+    segments = whisper_result.get("segments", [])
+    if not segments:
+        return 0.5
+    
+    avg_logprob = 0
+    total_len = 0
+    
+    for segment in segments:
+        logprob = segment.get("avg_logprob", -1.0)
+        length = len(segment.get("text", ""))
+        avg_logprob += logprob * length
+        total_len += length
+    
+    if total_len > 0:
+        avg_logprob /= total_len
+        confidence = float(torch.exp(torch.tensor(avg_logprob)).item())
+        return round(min(max(confidence, 0.0), 1.0), 4)
+    
+    return 0.5

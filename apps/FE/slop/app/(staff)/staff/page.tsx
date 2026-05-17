@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { apiClient, Conversation, Message } from '@/lib/api-client';
 import { CafeChatHistory } from '@/components/chat/ChatHistory';
+import { VoiceInput } from '@/components/voice/VoiceInput';
 import { useWebSocket } from '@/app/hooks/useWebSocket';
 import axios from 'axios';
 
@@ -37,11 +38,12 @@ function LoginForm({ onLogin }: { onLogin: () => Promise<void> }) {
   const [registerName, setRegisterName] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
-
+  
   const generateSuggestedId = () => {
     const random = Math.random().toString(36).substring(2, 6).toUpperCase();
     setRegisterId(`STAFF_${Date.now()}_${random}`);
   };
+
 
   useEffect(() => {
     if (isRegister) generateSuggestedId();
@@ -323,6 +325,8 @@ export default function StaffPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [isVoiceMode, setIsVoiceMode] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [isVoiceProcessing, setIsVoiceProcessing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
@@ -452,6 +456,25 @@ export default function StaffPage() {
       }, 2000);
     }
   }, [isRecording]);
+
+  const handleVoiceTranscript = useCallback((text: string, confidence: number) => {
+  console.log(`Voice recognized (${Math.round(confidence * 100)}%): ${text}`);
+  
+  // Append or replace current message
+  setCurrentMessage(prev => {
+      // If current message is empty, just set the new text
+      if (!prev.trim()) return text;
+      return prev + ' ' + text;
+    });
+    setVoiceError(null);
+  }, []);
+
+  const handleVoiceError = useCallback((error: string) => {
+    console.error('Voice error:', error);
+    setVoiceError(error);
+    // Clear error after 3 seconds
+    setTimeout(() => setVoiceError(null), 3000);
+  }, []);
 
   // Poll for new messages
   useEffect(() => {
@@ -592,27 +615,43 @@ export default function StaffPage() {
               {/* Input Area */}
               {isVoiceMode ? (
                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
-                  <button
-                    onClick={toggleRecording}
-                    style={{
-                      width: 46,
-                      flexShrink: 0,
-                      background: isRecording ? '#b85c4a' : '#efb36d',
-                      border: '2px solid #2b1d1d',
-                      boxShadow: isRecording ? 'none' : '3px 3px 0 #2b1d1d',
-                      cursor: 'pointer',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      transform: isRecording ? 'translate(3px,3px)' : 'none',
-                    }}
-                  >
-                    {isRecording ? <MicOff size={18} color="#fff8f0" /> : <Mic size={18} color="#2b1d1d" />}
-                  </button>
+                  <VoiceInput
+                    onTranscript={handleVoiceTranscript}
+                    onError={handleVoiceError}
+                    disabled={!isActive}
+                    buttonSize={18}
+                  />
                   <div
                     className="retro-inset"
-                    style={{ flex: 1, fontFamily: 'VT323, monospace', fontSize: 18, color: currentMessage ? '#2b1d1d' : '#a08060', minHeight: 48, display: 'flex', alignItems: 'center' }}
+                    style={{ 
+                      flex: 1, 
+                      fontFamily: 'VT323, monospace', 
+                      fontSize: 18, 
+                      color: currentMessage ? '#2b1d1d' : '#a08060', 
+                      minHeight: 48, 
+                      display: 'flex', 
+                      alignItems: 'center',
+                      position: 'relative',
+                    }}
                   >
                     {currentMessage || (isRecording ? '> MEREKAM...' : '> Klik mikrofon dan bicara...')}
                     {isRecording && <span className="retro-cursor" />}
+                    {voiceError && (
+                      <div style={{
+                        position: 'absolute',
+                        bottom: -30,
+                        left: 0,
+                        right: 0,
+                        background: '#b85c4a',
+                        color: '#fff8f0',
+                        padding: '4px 8px',
+                        fontSize: 14,
+                        fontFamily: 'VT323, monospace',
+                        borderRadius: 4,
+                      }}>
+                        ERROR: {voiceError}
+                      </div>
+                    )}
                   </div>
                   <button
                     onClick={handleSend}
