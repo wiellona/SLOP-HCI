@@ -17,7 +17,7 @@ export const setupSocketHandlers = (io: Server) => {
         // 2. Menerima pesan baru dan menyebarkannya ke layar sebelah
         socket.on('send_message', async (data) => {
             /* Ekspektasi data dari frontend: 
-            { sessionToken, senderId, content, modality } 
+            { sessionToken, senderId, role, content, modality } 
             */
             try {
                 // Cari ID sesi berdasarkan token
@@ -27,16 +27,16 @@ export const setupSocketHandlers = (io: Server) => {
 
                 if (!conversation) return;
 
-                // Pastikan dummy user untuk sender_id ada (buat testing aja)
+                // Logika Pemisahan Staff & Customer (Guest Account)
                 await prisma.user.upsert({
                     where: { id: data.senderId },
-                    update: {},
+                    update: {}, // Jika ID sudah ada di database (contoh: Staff), biarkan saja dan jangan diubah.
                     create: {
                         id: data.senderId,
-                        email: `${data.senderId}@slop.id`,  // <--- Tambahkan ini (dinamis sesuai ID sender)
-                        password: "dummypassword123",       // <--- Tambahkan ini
-                        display_name: "Pengirim",
-                        role: "CUSTOMER"
+                        email: `${data.senderId}@slop.id`,
+                        password: "guest_no_login_123",
+                        display_name: data.role === 'CUSTOMER' ? "Customer" : "Staff Kasir",
+                        role: data.role // Mengambil tipe (STAFF / CUSTOMER) langsung dari Next.js
                     }
                 });
 
@@ -49,10 +49,15 @@ export const setupSocketHandlers = (io: Server) => {
                         modality: data.modality,
                         status: 'SENT',
                         sent_at: new Date()
+                    },
+                    include: {
+                        sender: {
+                            select: { role: true, display_name: true }
+                        }
                     }
                 });
 
-                // 🚀 Tembakkan pesan ini ke SEMUA KLIEN yang ada di room tersebut
+                // Tembakkan pesan ini ke SEMUA KLIEN yang ada di room tersebut
                 io.to(data.sessionToken).emit('new_message', newMessage);
 
             } catch (error) {
