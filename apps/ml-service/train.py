@@ -5,9 +5,15 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
 import glob
+import json
 
 # Mengimport arsitektur Siformer yang sudah kita buat di Tahap 3
 from app.models.siformer_model import Siformer
+from app.hand_preprocess import FEATURE_SIZE_ONE_HAND, FEATURE_SIZE_TWO_HANDS
+
+USE_TWO_HANDS = False
+FEATURE_SIZE = FEATURE_SIZE_TWO_HANDS if USE_TWO_HANDS else FEATURE_SIZE_ONE_HAND
+NUM_JOINTS = 42 if USE_TWO_HANDS else 21
 
 # --- 1. DEFINISI DATASET CUSTOM ---
 # Kelas ini bertugas mencari dan memuat file .npy yang sudah kamu ekstrak
@@ -49,12 +55,18 @@ class BISINDODataset(Dataset):
         # Memuat matriks .npy
         data = np.load(self.samples[idx])
         
+        if data.ndim != 2 or data.shape[1] != FEATURE_SIZE:
+            raise ValueError(
+                "Ukuran fitur tidak sesuai. "
+                "Jalankan ulang preprocess_videos.py dengan konfigurasi USE_TWO_HANDS yang sama."
+            )
+
         # Penyesuaian Panjang Sekuens (Padding/Truncating)
         # Jika frame video > 30, kita potong. Jika < 30, kita tambah angka nol.
         if len(data) > self.sequence_length:
             data = data[:self.sequence_length]
         elif len(data) < self.sequence_length:
-            padding = np.zeros((self.sequence_length - len(data), 63))
+            padding = np.zeros((self.sequence_length - len(data), FEATURE_SIZE))
             data = np.vstack((data, padding))
             
         return torch.tensor(data, dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
@@ -87,7 +99,7 @@ def train_model():
     
     # Inisialisasi Model, Loss Function, dan Optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Siformer(num_classes=num_classes).to(device)
+    model = Siformer(num_joints=NUM_JOINTS, num_classes=num_classes).to(device)
     
     criterion = nn.CrossEntropyLoss() # Menghitung selisih prediksi dengan label asli
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE) # Algoritma pengubah bobot
@@ -119,7 +131,11 @@ def train_model():
 
     # Simpan hasil akhir "otak" model
     os.makedirs("app/models/weights", exist_ok=True)
-    torch.save(model.state_dict(), "app/models/weights/siformer_wlasl_cafe.pth")
+    weights_dir = os.path.join("app", "models", "weights")
+    os.makedirs(weights_dir, exist_ok=True)
+    torch.save(model.state_dict(), os.path.join(weights_dir, "siformer_wlasl_cafe.pth"))
+    with open(os.path.join(weights_dir, "siformer_labels.json"), "w", encoding="utf-8") as f:
+        json.dump(dataset.classes, f, ensure_ascii=True, indent=2)
     print("Pelatihan selesai! File bobot disimpan di app/models/weights/siformer_wlasl_cafe.pth")
 
 if __name__ == "__main__":

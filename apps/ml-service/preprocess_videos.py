@@ -4,6 +4,17 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from app.hand_preprocess import (
+    FEATURE_SIZE_ONE_HAND,
+    FEATURE_SIZE_TWO_HANDS,
+    normalize_hand_landmarks,
+    normalize_two_hands,
+)
+
+USE_TWO_HANDS = False
+REQUIRE_BOTH_HANDS = False
+FEATURE_SIZE = FEATURE_SIZE_TWO_HANDS if USE_TWO_HANDS else FEATURE_SIZE_ONE_HAND
+
 # 1. MENGAKSES LOKASI DATASET
 print("Membaca direktori dataset lokal...")
 dataset_path = "data/wlasl_cafe"
@@ -51,15 +62,20 @@ with mp_holistic.Holistic(static_image_mode=False, min_detection_confidence=0.5)
             results = holistic.process(frame_rgb)
 
             # Inisialisasi matriks nol berukuran 63 (21 titik * 3 sumbu)
-            hand_features = np.zeros(63)
+            hand_features = np.zeros(FEATURE_SIZE, dtype=np.float32)
 
             # Normalisasi spasial dengan menjadikan pergelangan tangan (indeks 0) sebagai titik pusat
-            if results.right_hand_landmarks:
-                wrist = results.right_hand_landmarks.landmark[0]
-                for i, landmark in enumerate(results.right_hand_landmarks.landmark):
-                    hand_features[i*3] = landmark.x - wrist.x
-                    hand_features[(i*3) + 1] = landmark.y - wrist.y
-                    hand_features[(i*3) + 2] = landmark.z - wrist.z
+            if USE_TWO_HANDS:
+                normalized = normalize_two_hands(
+                    results.right_hand_landmarks,
+                    results.left_hand_landmarks,
+                    require_both_hands=REQUIRE_BOTH_HANDS,
+                )
+            else:
+                normalized = normalize_hand_landmarks(results.right_hand_landmarks)
+
+            if normalized is not None:
+                hand_features = normalized
 
             # Menambahkan matriks koordinat dari frame ini ke dalam urutan video
             video_features.append(hand_features)

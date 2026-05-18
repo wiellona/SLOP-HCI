@@ -3,11 +3,20 @@ import mediapipe as mp
 import numpy as np
 import torch
 from collections import deque
+import json
 import os
 import time
 
 # Mengimpor arsitektur jaringan saraf Siformer
 from app.models.siformer_model import Siformer
+from app.hand_preprocess import (
+    FEATURE_SIZE_ONE_HAND,
+    FEATURE_SIZE_TWO_HANDS,
+    normalize_hand_landmarks,
+    normalize_two_hands,
+    compute_motion_score,
+    PredictionFilter,
+)
 
 # --- 1. DEKLARASI PEMETAAN KELAS (LABEL MAPPING) ---
 # Urutan label harus sama dengan urutan folder kelas yang dipakai saat training (abjad).
@@ -31,9 +40,23 @@ LABEL_MAP = [
     "water",
 ]
 
+LABELS_PATH = "app/models/weights/siformer_labels.json"
+if os.path.exists(LABELS_PATH):
+    with open(LABELS_PATH, "r", encoding="utf-8") as f:
+        LABEL_MAP = json.load(f)
+
+LABEL_ALIASES = {
+    "me": "i",
+}
+
+USE_TWO_HANDS = False
+REQUIRE_BOTH_HANDS = False
+FEATURE_SIZE = FEATURE_SIZE_TWO_HANDS if USE_TWO_HANDS else FEATURE_SIZE_ONE_HAND
+NUM_JOINTS = 42 if USE_TWO_HANDS else 21
+
 # --- 2. KONFIGURASI ARSITEKTUR DAN PEMUATAN PARAMETER ---
 NUM_CLASSES = len(LABEL_MAP)
-model = Siformer(num_classes=NUM_CLASSES)
+model = Siformer(num_joints=NUM_JOINTS, num_classes=NUM_CLASSES)
 
 weights_path = "app/models/weights/siformer_wlasl_cafe.pth"
 
@@ -58,9 +81,22 @@ SEQUENCE_LENGTH = 30
 frame_sequence = deque(maxlen=SEQUENCE_LENGTH)
 sentence_words = []
 last_hand_time = time.time()
+prev_features = None
 
-CONFIDENCE_THRESHOLD = 0.8
+MIN_CONFIDENCE = 0.85
+SMOOTHING_WINDOW = 5
+STABLE_FRAMES = 3
+COOLDOWN_FRAMES = 10
+MOTION_THRESHOLD = 0.08
 NO_HAND_TIMEOUT_SEC = 3.0
+
+prediction_filter = PredictionFilter(
+    window_size=SMOOTHING_WINDOW,
+    min_confidence=MIN_CONFIDENCE,
+    stable_frames=STABLE_FRAMES,
+    cooldown_frames=COOLDOWN_FRAMES,
+    motion_threshold=MOTION_THRESHOLD,
+)
 
 cap = cv2.VideoCapture(0)
 print("\n[ STATUS ] Sistem SLOP Daring. Siap menerima input visual dari kamera.")
@@ -72,52 +108,70 @@ while cap.isOpened():
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = holistic.process(frame_rgb)
-    hand_features = np.zeros(63)
+    hand_features = np.zeros(FEATURE_SIZE, dtype=np.float32)
+    motion_score = None
 
-    hand_detected = results.right_hand_landmarks is not None
+    if USE_TWO_HANDS:
+        normalized = normalize_two_hands(
+            results.right_hand_landmarks,
+            results.left_hand_landmarks,
+            require_both_hands=REQUIRE_BOTH_HANDS,
+        )
+    else:
+        normalized = normalize_hand_landmarks(results.right_hand_landmarks)
+
+    hand_detected = normalized is not None
+
     if hand_detected:
-        wrist = results.right_hand_landmarks.landmark[0]
-        for i, landmark in enumerate(results.right_hand_landmarks.landmark):
-            hand_features[i*3] = landmark.x - wrist.x
-            hand_features[(i*3) + 1] = landmark.y - wrist.y
-            hand_features[(i*3) + 2] = landmark.z - wrist.z
-            
-        mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-        last_hand_time = time.time()
+        hand_features = normalized
+        motion_score = compute_motion_score(prev_features, hand_features)
+        prev_features = hand_features
 
-    frame_sequence.append(hand_features)
+        if results.right_hand_landmarks:
+            mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+        if USE_TWO_HANDS and results.left_hand_landmarks:
+            mp_drawing.draw_landmarks(frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+
+        last_hand_time = time.time()
+        frame_sequence.append(hand_features)
+    else:
+        prev_features = None
+        prediction_filter.reset()
+        frame_sequence.clear()
 
     # --- 4. PROSES KLASIFIKASI SPASIAL-TEMPORAL ---
     if len(frame_sequence) == SEQUENCE_LENGTH:
-        # Dimensi array saat ini: (30, 63). 
-        # Fungsi unsqueeze(0) mengubahnya menjadi Tensor berdimensi: (1, 30, 63)
+        # Dimensi array saat ini: (30, FEATURE_SIZE).
+        # Fungsi unsqueeze(0) mengubahnya menjadi Tensor berdimensi: (1, 30, FEATURE_SIZE)
         input_tensor = torch.tensor(np.array(frame_sequence), dtype=torch.float32).unsqueeze(0)
 
         # Matikan perhitungan gradien secara komprehensif pada level sesi (no_grad)
         with torch.no_grad():
             output_logits = model(input_tensor)
-            probabilities = torch.softmax(output_logits, dim=1)
-            confidence, predicted_index = torch.max(probabilities, dim=1)
-            confidence_value = confidence.item()
-            predicted_index = predicted_index.item()
-        
-        if predicted_index < len(LABEL_MAP):
-            predicted_word = LABEL_MAP[predicted_index]
-        else:
-            predicted_word = "Indeks Tidak Valid"
+            probabilities = torch.softmax(output_logits, dim=1).cpu().numpy().flatten()
 
-        if hand_detected and confidence_value >= CONFIDENCE_THRESHOLD:
-            if not sentence_words or sentence_words[-1] != predicted_word:
-                sentence_words.append(predicted_word)
+        label_idx, conf, emit = prediction_filter.update(probabilities, motion_score)
+
+        if label_idx is not None:
+            predicted_word = LABEL_MAP[label_idx] if label_idx < len(LABEL_MAP) else "Indeks Tidak Valid"
+            display_word = LABEL_ALIASES.get(predicted_word, predicted_word)
+
+            if emit:
+                if not sentence_words or sentence_words[-1] != display_word:
+                    sentence_words.append(display_word)
+
+            display_conf = conf if conf is not None else 0.0
+        else:
+            display_word = "Menunggu..."
+            display_conf = 0.0
 
         print(
             "Terminal Output | Kata Dideteksi: [ "
-            f"{predicted_word} ] | Indeks Node: {predicted_index} | "
-            f"Conf: {confidence_value:.2f}     ",
+            f"{display_word} ] | Conf: {display_conf:.2f}     ",
             end='\r'
         )
 
-        cv2.putText(frame, f"Deteksi AI: {predicted_word}", (20, 50), 
+        cv2.putText(frame, f"Deteksi AI: {display_word}", (20, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3, cv2.LINE_AA)
 
     if not hand_detected and (time.time() - last_hand_time) >= NO_HAND_TIMEOUT_SEC:
