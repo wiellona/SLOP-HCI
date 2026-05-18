@@ -1,4 +1,3 @@
-// lib/ml-api-client.ts
 const ML_SERVICE_URL = process.env.NEXT_PUBLIC_ML_SERVICE_URL || 'http://localhost:8000';
 
 export class MLAPIClient {
