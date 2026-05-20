@@ -11,6 +11,7 @@ import kagglehub
 
 TARGET_WORDS = [
     "hello",
+    "me",
     "want",
     "order",
     "coffee",
@@ -19,7 +20,6 @@ TARGET_WORDS = [
     "sugar",
     "water",
     "no",
-    "ice",
     "hot",
     "one",
     "two",
@@ -46,6 +46,10 @@ def normalize_word(text: str) -> str:
     text = text.lower().replace("_", " ").replace("-", " ")
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def sanitize_tag(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def contains_token_sequence(tokens, target_tokens) -> bool:
@@ -243,8 +247,12 @@ def main():
     )
     parser.add_argument(
         "--dataset",
-        default="risangbaskoro/wlasl-processed",
-        help="Kaggle dataset handle (default: risangbaskoro/wlasl-processed)",
+        action="append",
+        default=[],
+        help=(
+            "Kaggle dataset handle. Bisa dipakai berkali-kali untuk menambahkan dataset lain. "
+            "Contoh: --dataset risangbaskoro/wlasl-processed"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -253,13 +261,10 @@ def main():
     )
     args = parser.parse_args()
 
+    datasets = args.dataset or ["risangbaskoro/wlasl-processed"]
+
     norm_to_word, targets_sorted, target_tokens = build_target_index(TARGET_WORDS)
     target_norms = set(norm_to_word.keys())
-
-    print("Mengunduh dataset via kagglehub...")
-    dataset_path = Path(kagglehub.dataset_download(args.dataset))
-    dataset_root = extract_zip_if_needed(dataset_path)
-    print(f"Dataset ditemukan di: {dataset_root}")
 
     output_root = Path(__file__).resolve().parent / "data" / "wlasl_cafe"
     output_root.mkdir(parents=True, exist_ok=True)
@@ -267,58 +272,88 @@ def main():
     for word in TARGET_WORDS:
         (output_root / word).mkdir(parents=True, exist_ok=True)
 
-    print("Memindai metadata...")
-    metadata_map = build_metadata_mapping(dataset_root, target_norms)
-    if metadata_map:
-        print(f"Metadata map ditemukan: {len(metadata_map)} entri")
-    else:
-        print("Metadata map tidak ditemukan, menggunakan folder/file name")
+    total_copied = 0
+    total_matched = 0
+    total_per_word = {norm: 0 for norm in target_norms}
 
-    print("Mencari file .mp4...")
-    video_files = [
-        path
-        for path in dataset_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTS
-    ]
-    print(f"Total video ditemukan: {len(video_files)}")
+    for dataset in datasets:
+        print("\n============================")
+        print(f"Mengunduh dataset via kagglehub: {dataset}")
+        dataset_path = Path(kagglehub.dataset_download(dataset))
+        dataset_root = extract_zip_if_needed(dataset_path)
+        print(f"Dataset ditemukan di: {dataset_root}")
 
-    copied = 0
-    matched = 0
-    per_word = {norm: 0 for norm in target_norms}
+        print("Memindai metadata...")
+        metadata_map = build_metadata_mapping(dataset_root, target_norms)
+        if metadata_map:
+            print(f"Metadata map ditemukan: {len(metadata_map)} entri")
+        else:
+            print("Metadata map tidak ditemukan, menggunakan folder/file name")
 
-    for video_path in video_files:
-        gloss_norm = infer_gloss(
-            video_path,
-            metadata_map,
-            targets_sorted,
-            target_tokens,
-            target_norms,
-        )
-        if not gloss_norm:
-            continue
+        print("Mencari file .mp4...")
+        video_files = [
+            path
+            for path in dataset_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTS
+        ]
+        print(f"Total video ditemukan: {len(video_files)}")
 
-        matched += 1
-        per_word[gloss_norm] += 1
+        copied = 0
+        matched = 0
+        per_word = {norm: 0 for norm in target_norms}
+        dataset_tag = sanitize_tag(dataset)
 
-        if args.dry_run:
-            continue
+        for video_path in video_files:
+            gloss_norm = infer_gloss(
+                video_path,
+                metadata_map,
+                targets_sorted,
+                target_tokens,
+                target_norms,
+            )
+            if not gloss_norm:
+                continue
 
-        dest_dir = output_root / norm_to_word[gloss_norm]
-        dest_path = dest_dir / video_path.name
+            matched += 1
+            per_word[gloss_norm] += 1
 
-        if dest_path.exists():
-            continue
+            if args.dry_run:
+                continue
 
-        shutil.copy2(video_path, dest_path)
-        copied += 1
+            dest_dir = output_root / norm_to_word[gloss_norm]
+            dest_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Selesai.")
-    print(f"Matched: {matched}")
-    print(f"Copied: {copied}")
+            dest_path = dest_dir / video_path.name
+            if dest_path.exists():
+                candidate = dest_dir / f"{video_path.stem}__{dataset_tag}{video_path.suffix}"
+                if candidate.exists():
+                    idx = 1
+                    while True:
+                        candidate = dest_dir / f"{video_path.stem}__{dataset_tag}_{idx}{video_path.suffix}"
+                        if not candidate.exists():
+                            break
+                        idx += 1
+                dest_path = candidate
 
-    missing = [norm_to_word[norm] for norm, count in per_word.items() if count == 0]
-    if missing:
-        print("Tidak ditemukan video untuk kata: " + ", ".join(missing))
+            shutil.copy2(video_path, dest_path)
+            copied += 1
+
+        total_copied += copied
+        total_matched += matched
+        for norm, count in per_word.items():
+            total_per_word[norm] += count
+
+        print("Selesai.")
+        print(f"Matched: {matched}")
+        print(f"Copied: {copied}")
+
+        missing = [norm_to_word[norm] for norm, count in per_word.items() if count == 0]
+        if missing:
+            print("Tidak ditemukan video untuk kata: " + ", ".join(missing))
+
+    print("\n===== Ringkasan Semua Dataset =====")
+    print(f"Matched total: {total_matched}")
+    print(f"Copied total: {total_copied}")
 
 
 if __name__ == "__main__":
