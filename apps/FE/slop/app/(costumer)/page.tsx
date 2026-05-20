@@ -18,6 +18,7 @@ import { CafeRecommendationQuestions } from '@/components/chat/RecommendationQue
 import { EditPanel } from '@/components/chat/EditPanel';
 import { useWebSocket } from '@/app/hooks/useWebSocket';
 
+
 interface LocalMessage {
   id: string;
   text: string;
@@ -96,63 +97,90 @@ export default function CustomerPage() {
 
   // WebSocket connection
   const initWebSocket = useCallback(() => {
-    const mlWsUrl = process.env.NEXT_PUBLIC_ML_WS_URL || 'ws://localhost:8000';
-    wsRef.current = new WebSocket(`${mlWsUrl}/v1/sign/stream`);
+  const mlWsUrl = process.env.NEXT_PUBLIC_ML_WS_URL || 'ws://localhost:8000';
+  const wsUrl = `${mlWsUrl}/v1/sign/stream`;
+  console.log('Connecting to WebSocket:', wsUrl);
+  
+  wsRef.current = new WebSocket(wsUrl);
 
-    wsRef.current.onopen = () => {
-      wsRef.current?.send(JSON.stringify({ session_token: 'customer_session' }));
-      setIsWebSocketConnected(true);
-    };
+  wsRef.current.onopen = () => {
+    console.log('WebSocket connected, sending session token...');
+    // Kirim session token setelah connection terbuka
+    const sessionToken = sessionId || 'customer_session_' + Date.now();
+    wsRef.current?.send(JSON.stringify({ session_token: sessionToken }));
+    setIsWebSocketConnected(true);
+  };
 
-    wsRef.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        switch (data.event) {
-          case 'inference_started':
-            setIsProcessing(true);
-            break;
-          case 'text_streamed':
-            if (data.bounding_box) {
-              setBoundingBox(data.bounding_box);
-              setOcclusionDetected(data.occlusion_detected);
-            }
-            if (data.partial_text) {
-              setCurrentTranslation(data.partial_text);
-              setConfidence(data.confidence_score);
-              setIsTracking(true);
-            }
-            break;
-          case 'inference_complete':
-            handleInferenceComplete(data);
-            break;
-          case 'error':
-            console.error('Inference error:', data.error);
-            setIsProcessing(false);
-            break;
-        }
-      } catch (err) {
-        console.error('Failed to parse message:', err);
+  wsRef.current.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('WebSocket message received:', data);
+      
+      switch (data.event) {
+        case 'connected':
+          console.log('Connected to sign service:', data.message);
+          break;
+        case 'text_streamed':
+          if (data.partial_text) {
+            setCurrentTranslation(data.partial_text);
+            setConfidence(data.confidence_score || 0);
+            setIsTracking(data.hand_detected || false);
+          }
+          break;
+        case 'inference_complete':
+          handleInferenceComplete(data);
+          break;
+        case 'error':
+          console.error('Inference error:', data.error);
+          setIsProcessing(false);
+          break;
       }
-    };
+    } catch (err) {
+      console.error('Failed to parse message:', err);
+    }
+  };
 
-    wsRef.current.onerror = () => {
+  wsRef.current.onerror = (error) => {
+    console.error('WebSocket error:', error);
+    setIsWebSocketConnected(false);
+  };
+
+  wsRef.current.onclose = () => {
+      console.log('WebSocket closed, attempting to reconnect...');
       setIsWebSocketConnected(false);
+      // Reconnect after 3 seconds
       setTimeout(() => {
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
           initWebSocket();
         }
       }, 3000);
     };
+  }, [sessionId]);
 
-    wsRef.current.onclose = () => {
-      setIsWebSocketConnected(false);
-      setTimeout(() => {
-        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-          initWebSocket();
-        }
-      }, 3000);
-    };
-  }, []);
+  const handleInferenceComplete = useCallback((data: any) => {
+    const word = data.raw_prediction_text;
+    const now = Date.now();
+
+    console.log(`Inference complete: "${word}" with confidence ${data.final_confidence_score}`);
+
+    if (now - lastWordTime > SENTENCE_GAP_MS) {
+      setSentenceBuffer([word]);
+      setCurrentTranslation(word);
+    } else {
+      const newBuffer = [...sentenceBuffer, word];
+      setSentenceBuffer(newBuffer);
+      setCurrentTranslation(newBuffer.join(' '));
+    }
+    setLastWordTime(now);
+    setConfidence(data.final_confidence_score || 0);
+    setIsProcessing(false);
+
+    if (data.final_confidence_score < 0.85 && data.alternatives && data.alternatives.length > 0) {
+      setAlternatives(data.alternatives);
+    } else {
+      setAlternatives([]);
+    }
+  }, [lastWordTime, sentenceBuffer, SENTENCE_GAP_MS]);
 
   const { isConnected: wsConnected, sendMessage: wsSendMessage } = useWebSocket(
   sessionId,
@@ -204,44 +232,28 @@ export default function CustomerPage() {
     }
   }, [currentTranslation, confidence, sessionId, wsConnected, wsSendMessage]);
   
-  // Handle inference complete
-  const handleInferenceComplete = useCallback((data: any) => {
-    const word = data.raw_prediction_text;
-    const now = Date.now();
-
-    if (now - lastWordTime > SENTENCE_GAP_MS) {
-      setSentenceBuffer([word]);
-      setCurrentTranslation(word);
-    } else {
-      const newBuffer = [...sentenceBuffer, word];
-      setSentenceBuffer(newBuffer);
-      setCurrentTranslation(newBuffer.join(' '));
-    }
-    setLastWordTime(now);
-    setConfidence(data.final_confidence_score);
-    setIsProcessing(false);
-
-    if (data.final_confidence_score < 0.85 && data.alternatives) {
-      setAlternatives(data.alternatives);
-    } else {
-      setAlternatives([]);
-    }
-  }, [lastWordTime, sentenceBuffer]);
 
   // Frame capture
   const startFrameCapture = useCallback(() => {
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
 
     frameIntervalRef.current = setInterval(() => {
-      if (!webcamRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      if (!webcamRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        return;
+      }
 
       const imageSrc = webcamRef.current.getScreenshot();
       if (imageSrc) {
-        const base64 = imageSrc.split(',')[1];
         try {
-          const binaryData = atob(base64);
-          const bytes = new Uint8Array(binaryData.length);
-          for (let i = 0; i < binaryData.length; i++) bytes[i] = binaryData.charCodeAt(i);
+          // Convert base64 to binary
+          const base64Data = imageSrc.split(',')[1];
+          const binaryString = atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          
+          // Send binary data
           wsRef.current.send(bytes);
         } catch (err) {
           console.error('Failed to send frame:', err);
