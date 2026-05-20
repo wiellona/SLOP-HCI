@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from 'react';
-import Webcam from 'react-webcam';
+import { useState, useCallback, useEffect, useRef } from "react";
+import Webcam from "react-webcam";
 
 import { apiClient, Message as APIMessage } from "@/lib/api-client";
 import { CafeHeader } from "@/components/cafe/CafeHeader";
@@ -394,8 +394,7 @@ export default function CustomerPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#d8a8b8" }}>
-    <div style={{ minHeight: '100vh', background: '#f8eddb' }}>
+    <div style={{ minHeight: "100vh", background: "#f8eddb" }}>
       <CafeHeader
         title="SLOP"
         subtitle="Customer Terminal | Gesture-to-Text"
@@ -403,7 +402,7 @@ export default function CustomerPage() {
         onReset={resetChat}
       />
 
-      {/* Main Layout - Adjusted for taller camera */}
+      {/* Main Layout */}
       <div
         style={{
           display: "grid",
@@ -411,24 +410,20 @@ export default function CustomerPage() {
           gridTemplateColumns: "1.6fr 1fr",
           gap: 12,
           padding: 12,
+          overflow: "auto",
         }}
       >
-        {/* Left Section - Camera area will be taller */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {/* Camera Feed - Now with taller aspect ratio */}
-          <div style={{ flex: "2", minHeight: 0 }}>
-      {/* Main Layout */}
-      <div style={{ 
-        display: 'grid', 
-        height: 'calc(100vh - 73px)',
-        gridTemplateColumns: '1.6fr 1fr', 
-        gap: 10, 
-        padding: 12,
-        overflow: 'auto'
-      }}>
         {/* Left Section */}
-        <div style={{ display: 'flex', flexDirection: 'column', flexWrap: 'wrap', minHeight: 0, gap: 10 }}>
-          <div style={{ flex: 'auto', minHeight: 200}}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            flexWrap: "wrap",
+            minHeight: 0,
+            gap: 10,
+          }}
+        >
+          <div style={{ flex: "auto", minHeight: 200 }}>
             <CafeCameraFeed
               webcamRef={webcamRef}
               isActive={isCameraActive}
@@ -447,7 +442,7 @@ export default function CustomerPage() {
             </CafeCameraFeed>
           </div>
 
-          <div style={{ flexShrink: 1, marginTop: 'auto' }}>
+          <div style={{ flexShrink: 1, marginTop: "auto" }}>
             <CafeTranslationPreview
               translation={currentTranslation}
               isProcessing={isProcessing}
@@ -467,10 +462,6 @@ export default function CustomerPage() {
             <CafeActionButtons
               onSend={handleSend}
               disabled={!currentTranslation || isProcessing || !sessionId}
-          <div style={{ flexShrink: 1, marginTop: 'auto' }}>
-            <CafeActionButtons 
-              onSend={handleSend} 
-              disabled={!currentTranslation || isProcessing || !sessionId} 
             />
           </div>
         </div>
