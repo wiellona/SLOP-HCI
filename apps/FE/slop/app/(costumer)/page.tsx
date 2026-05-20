@@ -124,6 +124,10 @@ export default function CustomerPage() {
             setCurrentTranslation(data.partial_text);
             setConfidence(data.confidence_score || 0);
             setIsTracking(data.hand_detected || false);
+            if (data.bounding_box) {
+              setBoundingBox(data.bounding_box);
+              setOcclusionDetected(data.bounding_box.is_occluded || false);
+            }
           }
           break;
         case 'inference_complete':
@@ -162,6 +166,10 @@ export default function CustomerPage() {
 
     console.log(`Inference complete: "${word}" with confidence ${data.final_confidence_score}`);
 
+    if (data.bounding_box) {
+      setBoundingBox(data.bounding_box);
+      setOcclusionDetected(data.bounding_box.is_occluded || false);
+    }
     if (now - lastWordTime > SENTENCE_GAP_MS) {
       setSentenceBuffer([word]);
       setCurrentTranslation(word);
@@ -428,7 +436,7 @@ export default function CustomerPage() {
             />
           </div>
 
-          <div style={{ flexShrink: 1, marginTop: 'auto' }}>
+          <div style={{ flexShrink: 0, marginTop: 'auto' }}>
             <CafeActionButtons 
               onSend={handleSend} 
               disabled={!currentTranslation || isProcessing || !sessionId} 
