@@ -4,10 +4,21 @@ import numpy as np
 import torch
 from collections import deque
 
+from app.hand_preprocess import (
+    FEATURE_SIZE_ONE_HAND,
+    FEATURE_SIZE_TWO_HANDS,
+    normalize_hand_landmarks,
+    normalize_two_hands,
+)
+
+USE_TWO_HANDS = True
+REQUIRE_BOTH_HANDS = True
+FEATURE_SIZE = FEATURE_SIZE_TWO_HANDS if USE_TWO_HANDS else FEATURE_SIZE_ONE_HAND
+
 # Inisialisasi MediaPipe
 mp_holistic = mp.solutions.holistic
 holistic = mp_holistic.Holistic(
-    static_iqge_mode=False,
+    static_image_mode=False,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
@@ -33,30 +44,28 @@ while cap.isOpened():
 
     # 2. INISIALISASI ARRAY UNTUK 1 FRAME
     # Membuat array kosong berisi angka nol sebanyak 63 (21 titik * 3 sumbu koordinat)
-    hand_features = np.zeros(63)
+    hand_features = np.zeros(FEATURE_SIZE, dtype=np.float32)
 
-    if results.right_hand_landmarks:
-        # 3. NORMALISASI SPASIAL
-        # Mengambil koordinat pergelangan tangan (wrist) pada indeks 0 sebagai pusat referensi
-        wrist = results.right_hand_landmarks.landmark[0]
-        wrist_x = wrist.x
-        wrist_y = wrist.y
-        wrist_z = wrist.z
+    if USE_TWO_HANDS:
+        normalized = normalize_two_hands(
+            results.right_hand_landmarks,
+            results.left_hand_landmarks,
+            require_both_hands=REQUIRE_BOTH_HANDS,
+        )
+        if normalized is not None:
+            hand_features = normalized
 
-        # Melakukan iterasi (perulangan) pada 21 titik tangan
-        for i, landmark in enumerate(results.right_hand_landmarks.landmark):
-            # Normalisasi: Koordinat titik saat ini dikurangi koordinat wrist
-            norm_x = landmark.x - wrist_x
-            norm_y = landmark.y - wrist_y
-            norm_z = landmark.z - wrist_z
+        if results.right_hand_landmarks:
+            mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+        if results.left_hand_landmarks:
+            mp_drawing.draw_landmarks(frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+    else:
+        if results.right_hand_landmarks:
+            normalized = normalize_hand_landmarks(results.right_hand_landmarks)
+            if normalized is not None:
+                hand_features = normalized
 
-            # Memasukkan nilai hasil normalisasi ke dalam array yang tepat.
-            # Rumus (i*3) memastikan X, Y, Z tersusun urut: x0, y0, z0, x1, y1, z1, dst.
-            hand_features[i*3] = norm_x
-            hand_features[(i*3) + 1] = norm_y
-            hand_features[(i*3) + 2] = norm_z
-
-        mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+            mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
 
     # 4. PENYIMPANAN KE DALAM ANTREAN
     # Nilai 63 koordinat (baik itu 0 semua karena tidak terdeteksi, atau hasil perhitungan)

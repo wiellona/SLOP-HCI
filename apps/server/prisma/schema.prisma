@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── ENUMS ────────────────────────────────────────────────
+
+enum UserRole {
+  STAFF
+  CUSTOMER
+  ADMIN
+}
+
+enum InputModality {
+  SIGN
+  VOICE
+  TEXT
+}
+
+enum ConversationStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+enum MessageStatus {
+  PREVIEW     // Stage 1: visible only to sender
+  SENT        // Stage 2: synced to both screens
+}
+
+// ─── USERS ────────────────────────────────────────────────
+
+model User {
+  id              String           @id @default(cuid())
+  email           String           @unique
+  password        String
+  supabase_uid    String?          @unique  // Supabase Auth UID
+  display_name    String
+  role            UserRole         @default(CUSTOMER)
+
+  // Accessibility metadata
+  is_deaf         Boolean          @default(false)
+  preferred_lang  String           @default("en-US")
+  sign_dialect    String?          // e.g. 'ASL', 'BSL', 'BISINDO'
+
+  // Terminal binding
+  terminal_id     String?          // Physical device ID
+  is_active       Boolean          @default(true)
+
+  created_at      DateTime         @default(now())
+  updated_at      DateTime         @updatedAt
+
+  messages        Message[]
+  conversations   ConversationParticipant[]
+  inference_logs  AI_Inference_Log[]
+
+  @@map("users")
+}
+
+// ─── CONVERSATIONS ────────────────────────────────────────
+
+model Conversation {
+  id              String           @id @default(cuid())
+  session_token   String           @unique @default(uuid())
+  status          ConversationStatus @default(ACTIVE)
+
+  // Terminal tracking
+  staff_terminal  String?          // Socket room for staff screen
+  customer_terminal String?        // Socket room for customer screen
+
+  started_at      DateTime         @default(now())
+  ended_at        DateTime?
+
+  messages        Message[]
+  participants    ConversationParticipant[]
+  inference_logs  AI_Inference_Log[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id              String       @id @default(cuid())
+  conversation    Conversation @relation(fields: [conversation_id], references: [id])
+  conversation_id String
+  user            User         @relation(fields: [user_id], references: [id])
+  user_id         String
+  joined_at       DateTime     @default(now())
+  left_at         DateTime?
+
+  @@unique([conversation_id, user_id])
+  @@map("conversation_participants")
+}
+
+// ─── MESSAGES ─────────────────────────────────────────────
+
+model Message {
+  id              String        @id @default(cuid())
+  conversation    Conversation  @relation(fields: [conversation_id], references: [id])
+  conversation_id String
+  sender          User          @relation(fields: [sender_id], references: [id])
+  sender_id       String
+
+  content         String        // Final, human-confirmed message text
+  modality        InputModality
+  status          MessageStatus @default(PREVIEW)
+
+  // Linked AI log (nullable — text-typed messages have no log)
+  inference_log   AI_Inference_Log? @relation(fields: [inference_log_id], references: [id])
+  inference_log_id String?       @unique
+
+  created_at      DateTime      @default(now())
+  sent_at         DateTime?     // Timestamp when status -> SENT
+
+  @@map("messages")
+}
+
+// ─── AI INFERENCE LOGS (RLHF CORE) ───────────────────────
+
+model AI_Inference_Log {
+  id                   String        @id @default(cuid())
+  conversation         Conversation  @relation(fields: [conversation_id], references: [id])
+  conversation_id      String
+  user                 User          @relation(fields: [user_id], references: [id])
+  user_id              String
+
+  // AI Output
+  raw_prediction_text  String        // What the model predicted
+  confidence_score     Float         // 0.0 - 1.0 (normalised)
+  model_version        String        // e.g. 'siformer-v2.1', 'whisper-large-v3'
+  input_modality       InputModality
+
+  // Human Correction (RLHF Signal)
+  final_corrected_text String?       // What the user actually sent
+  was_edited           Boolean       @default(false)
+  was_rejected         Boolean       @default(false) // User discarded entirely
+  edit_delta_chars     Int?          // Levenshtein diff size (derived)
+
+  // Contextual metadata
+  occlusion_detected   Boolean       @default(false)
+  frame_rate_avg       Float?        // Avg FPS during capture
+  inference_latency_ms Int?          // End-to-end inference time
+
+  // RLHF export flag
+  exported_for_training Boolean      @default(false)
+  exported_at          DateTime?
+
+  created_at           DateTime      @default(now())
+  message              Message?
+
+  @@index([conversation_id, created_at])
+  @@index([input_modality, was_edited])
+  @@index([exported_for_training])
+  @@map("ai_inference_logs")
+}
