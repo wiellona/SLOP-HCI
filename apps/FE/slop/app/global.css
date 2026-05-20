@@ -14,7 +14,7 @@
   }
 
   body {
-    background: #d8a8b8;
+    background: #f8eddb;
     color: #3a2b2b;
     font-family: "VT323", monospace;
     image-rendering: pixelated;
@@ -52,7 +52,7 @@
   }
 
   .retro-titlebar {
-    background: linear-gradient(90deg, #f26a3d 0%, #e8552a 100%);
+    background: linear-gradient(90deg, #f26a3d 0%, #fb563f 100%);
     border-bottom: 2px solid #2b1d1d;
     padding: 5px 8px;
     display: flex;

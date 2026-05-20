@@ -74,7 +74,7 @@ export function CafeCameraFeed({
               audio={false}
               mirrored={true}
               screenshotFormat="image/jpeg"
-              videoConstraints={{ width: 480, height: 480, facingMode: 'user' }}
+              videoConstraints={{ width: 640, height: 300, facingMode: 'user' }}
               style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
             />
             {children}
