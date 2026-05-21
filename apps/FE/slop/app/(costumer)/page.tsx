@@ -59,6 +59,7 @@ export default function CustomerPage() {
   const [currentStaff, setCurrentStaff] = useState<StaffInfo | null>(null);
   const [isOnline, setIsOnline] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [accumulatedSentence, setAccumulatedSentence] = useState('');
 
   // Refs
   const webcamRef = useRef<Webcam>(null);
@@ -105,36 +106,49 @@ export default function CustomerPage() {
 
     wsRef.current = new WebSocket(wsUrl);
 
-  wsRef.current.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log('WebSocket message received:', data);
-      
-      switch (data.event) {
-        case 'connected':
-          console.log('Connected to sign service:', data.message);
-          break;
-        case 'text_streamed':
-          if (data.partial_text) {
-            setCurrentTranslation(data.partial_text);
-            setConfidence(data.confidence_score || 0);
-            setIsTracking(data.hand_detected || false);
+    wsRef.current.onopen = () => {
+      console.log('WebSocket connected successfully');
+      const sessionToken = sessionId || 'customer_session_' + Date.now();
+      console.log('Sending session token:', sessionToken);
+      wsRef.current?.send(JSON.stringify({ session_token: sessionToken }));
+      setIsWebSocketConnected(true);
+    };
+    wsRef.current.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('WebSocket message received:', data);
+        
+        switch (data.event) {
+          case 'connected':
+            console.log('Connected to sign service:', data.message);
+            break;
+          case 'text_streamed':
+            if (data.partial_text) {
+              setCurrentTranslation(data.partial_text);
+              setConfidence(data.confidence_score || 0);
+              setIsTracking(data.hand_detected || false);
+              if (data.partial_text !== accumulatedSentence) {
+                setAccumulatedSentence(data.partial_text);
+              }
+            }
+            
             if (data.bounding_box) {
               setBoundingBox(data.bounding_box);
               setOcclusionDetected(data.bounding_box.is_occluded || false);
             }
-          }
-          break;
-        case 'inference_complete':
-          handleInferenceComplete(data);
-          break;
-        case 'error':
-          console.error('Inference error:', data.error);
-          setIsProcessing(false);
-          break;
+            break;
+          case 'inference_complete':
+            handleInferenceComplete(data);
+            break;
+          case 'error':
+            console.error('Inference error:', data.error);
+            setIsProcessing(false);
+            break;
+        }
+      } catch (err) {
+        console.error('Failed to parse message:', err);
       }
     };
-
     wsRef.current.onerror = (error) => {
       console.error("WebSocket error:", error);
       setIsWebSocketConnected(false);
@@ -155,16 +169,23 @@ export default function CustomerPage() {
   const handleInferenceComplete = useCallback(
     (data: any) => {
       const word = data.raw_prediction_text;
+      const sentence = data.full_sentence || data.sentence_buffer || word;
       const now = Date.now();
 
       console.log(
         `Inference complete: "${word}" with confidence ${data.final_confidence_score}`,
       );
+      console.log(`Current sentence: "${sentence}"`);
 
     if (data.bounding_box) {
       setBoundingBox(data.bounding_box);
       setOcclusionDetected(data.bounding_box.is_occluded || false);
     }
+    
+    setCurrentTranslation(sentence);
+    setConfidence(data.final_confidence_score || 0);
+    setIsProcessing(false);
+    
     if (now - lastWordTime > SENTENCE_GAP_MS) {
       setSentenceBuffer([word]);
       setCurrentTranslation(word);
@@ -173,9 +194,6 @@ export default function CustomerPage() {
       setSentenceBuffer(newBuffer);
       setCurrentTranslation(newBuffer.join(' '));
     }
-    setLastWordTime(now);
-    setConfidence(data.final_confidence_score || 0);
-    setIsProcessing(false);
 
       if (
         data.final_confidence_score < 0.85 &&
@@ -207,41 +225,56 @@ export default function CustomerPage() {
     }, []),
   );
 
-  // Modify handleSend to use WebSocket
+  // UpdateAccumulated Sentece
   const handleSend = useCallback(async () => {
-    if (!currentTranslation.trim() || !sessionId) return;
+    const textToSend = currentTranslation.trim() || accumulatedSentence.trim();
+  
+    if (!textToSend || !sessionId) return;
 
-    const text = currentTranslation.trim();
     const tempMessage: LocalMessage = {
       id: `temp_${Date.now()}`,
-      text,
-      sender: "customer",
+      text: textToSend,
+      sender: 'customer',
       timestamp: new Date(),
       confidence,
     };
-    setConversation((prev) => [...prev, tempMessage]);
-    setCurrentTranslation("");
+    
+    setConversation(prev => [...prev, tempMessage]);
+    
+    // Clear the current translation and accumulated sentence
+    setCurrentTranslation('');
+    setAccumulatedSentence('');
     setSentenceBuffer([]);
     setAlternatives([]);
 
     try {
-      await apiClient.sendMessage(sessionId, text, "CUSTOMER", confidence);
+      await apiClient.sendMessage(sessionId, textToSend, 'CUSTOMER', confidence);
+      
+      await fetch(`http://localhost:8000/v1/sign/reset/${sessionId}`, {
+        method: 'POST'
+      });
       // Send via WebSocket for real-time delivery
       if (wsConnected) {
         wsSendMessage({
-          text,
-          sender_type: "CUSTOMER",
+          text: textToSend,
+          sender_type: 'CUSTOMER',
           confidence,
         });
       }
+      
+      // Reset the processor on the backend
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'reset' }));
+      }
     } catch (err) {
-      console.error("Failed to send message:", err);
-      setConversation((prev) =>
-        prev.filter((msg) => msg.id !== tempMessage.id),
-      );
+      console.error('Failed to send message:', err);
+      setConversation(prev => prev.filter(msg => msg.id !== tempMessage.id));
+      // Restore the text on error
+      setCurrentTranslation(textToSend);
+      setAccumulatedSentence(textToSend);
     }
-  }, [currentTranslation, confidence, sessionId, wsConnected, wsSendMessage]);
-
+  }, [currentTranslation, accumulatedSentence, confidence, sessionId, wsConnected, wsSendMessage]);
+  
   // Frame capture
   const startFrameCapture = useCallback(() => {
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
@@ -404,10 +437,10 @@ export default function CustomerPage() {
         style={{
           display: "grid",
           height: "calc(100vh - 73px)",
-          gridTemplateColumns: "1.6fr 1fr",
+          gridTemplateColumns: "minmax(0, 1.6fr) minmax(320px, 1fr)",
           gap: 12,
           padding: 12,
-          overflow: "auto",
+          overflow: "hidden",
         }}
       >
         {/* Left Section */}
@@ -415,7 +448,7 @@ export default function CustomerPage() {
           style={{
             display: "flex",
             flexDirection: "column",
-            flexWrap: "wrap",
+            minWidth: 0,
             minHeight: 0,
             gap: 10,
           }}
@@ -455,7 +488,7 @@ export default function CustomerPage() {
             />
           </div>
 
-          <div style={{ flexShrink: 0, marginTop: 'auto' }}>
+          <div style={{ flexShrink: 0, position: "relative" }}>
             <CafeActionButtons 
               onSend={handleSend} 
               disabled={!currentTranslation || isProcessing || !sessionId} 
@@ -464,7 +497,14 @@ export default function CustomerPage() {
         </div>
 
         {/* Right Section */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div  style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+          minHeight: 0,
+          minWidth: 0,
+          overflow: "hidden",
+        }}>
           <CafeChatHistory
             messages={conversation}
             emptyMessage="Belum ada pesan"

@@ -2,6 +2,7 @@
 
 import { ReactNode } from 'react';
 import { RotateCcw } from 'lucide-react';
+import Image from 'next/image';
 
 interface CafeHeaderProps {
   title: string;
@@ -9,9 +10,11 @@ interface CafeHeaderProps {
   status?: 'online' | 'connecting' | 'offline';
   rightActions?: ReactNode;
   onReset?: () => void;
+  iconUrl?: string;
+  iconSize?: number;
 }
 
-export function CafeHeader({ title, subtitle, status, rightActions, onReset }: CafeHeaderProps) {
+export function CafeHeader({ title, subtitle, status, rightActions, onReset, iconUrl = '/SLOP.png', iconSize = 100 }: CafeHeaderProps) {
   const statusColors: Record<string, string> = {
     online: '#6B8C42',
     connecting: '#C4A77D',
@@ -29,8 +32,23 @@ export function CafeHeader({ title, subtitle, status, rightActions, onReset }: C
       {/* Title bar */}
       <div className="retro-titlebar">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="retro-titlebar-icon" />
-          <span className="retro-titlebar-title">{title} - {subtitle}</span>
+          {iconUrl && (
+            <div style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <Image 
+                src={iconUrl}
+                alt={title}
+                width={iconSize}
+                height={iconSize}
+                style={{ objectFit: 'contain' }}
+              />
+            </div>
+          )}
+          <span className="retro-titlebar-title">- {subtitle}</span>
         </div>
         <div className="retro-winctrls">
           <button className="retro-winctrl" title="Minimize">-</button>

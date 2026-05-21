@@ -78,9 +78,13 @@ class SignLanguageProcessor:
         self.sentence_buffers: Dict[str, list] = {}
         self.last_word_times: Dict[str, float] = {}
         self.last_predictions: Dict[str, str] = {}
+        self.consecutive_predictions: Dict[str, int] = {}
         self.sentence_gap_ms = 2000
         self.frame_counters: Dict[str, int] = {}
         self.last_bounding_boxes: Dict[str, Optional[dict]] = {}
+        self.last_processed_word: Dict[str, str] = {}
+        self.prediction_lock: Dict[str, bool] = {}
+        self.waiting_for_reset: Dict[str, bool] = {}
         
     def get_or_create_sequence(self, session_id: str) -> deque:
         if session_id not in self.frame_sequences:
@@ -88,8 +92,12 @@ class SignLanguageProcessor:
             self.sentence_buffers[session_id] = []
             self.last_word_times[session_id] = time.time()
             self.last_predictions[session_id] = ""
+            self.consecutive_predictions[session_id] = 0
             self.frame_counters[session_id] = 0
             self.last_bounding_boxes[session_id] = None
+            self.last_processed_word[session_id] = ""
+            self.prediction_lock[session_id] = False
+            self.waiting_for_reset[session_id] = False
         return self.frame_sequences[session_id]
     
     def decode_frame(self, frame_bytes: bytes):
@@ -239,32 +247,68 @@ class SignLanguageProcessor:
                 predicted_word = ""
                 confidence_value = 0.0
             
-            # Update sentence buffer
+            # Update consecutive predictions counter
             current_time = time.time()
-            last_time = self.last_word_times.get(session_id, current_time)
             last_pred = self.last_predictions.get(session_id, "")
             
-            if confidence_value >= CONFIDENCE_THRESHOLD and predicted_word:
+            # Track consecutive same predictions
+            if predicted_word == last_pred and predicted_word:
+                self.consecutive_predictions[session_id] = self.consecutive_predictions.get(session_id, 0) + 1
+            else:
+                self.consecutive_predictions[session_id] = 0
+            
+            min_consecutive = 2
+            
+            if self.waiting_for_reset.get(session_id, False):
+                # Don't add new words until reset is complete
+                logger.info(f"Session {session_id} waiting for reset after message send")
+                return {
+                    "predicted_word": "",
+                    "confidence_score": 0,
+                    "current_sentence": " ".join(self.sentence_buffers.get(session_id, [])),
+                    "full_sentence": " ".join(self.sentence_buffers.get(session_id, [])),
+                    "alternatives": [],
+                    "consecutive_count": 0,
+                    "buffer_length": len(self.sentence_buffers.get(session_id, []))
+                }
+            # Only add to buffer if confidence is high AND consecutive detections
+            if (confidence_value >= CONFIDENCE_THRESHOLD and 
+                predicted_word and 
+                self.consecutive_predictions[session_id] >= min_consecutive and
+                not self.prediction_lock.get(session_id, False)):
+                
+                # Lock to prevent multiple additions
+                self.prediction_lock[session_id] = True
+                
+                last_time = self.last_word_times.get(session_id, current_time)
                 time_diff = current_time - last_time
                 
-                # Add to sentence buffer if different word or enough time passed
-                if predicted_word != last_pred or time_diff > self.sentence_gap_ms / 1000:
-                    if time_diff > self.sentence_gap_ms / 1000:
-                        # New sentence
-                        self.sentence_buffers[session_id] = [predicted_word]
-                    else:
-                        # Continue current sentence
-                        if (not self.sentence_buffers[session_id] or 
-                            self.sentence_buffers[session_id][-1] != predicted_word):
-                            self.sentence_buffers[session_id].append(predicted_word)
-                    
+                # Check if word already in buffer recently
+                current_buffer = self.sentence_buffers.get(session_id, [])
+                last_word_in_buffer = current_buffer[-1] if current_buffer else ""
+                
+                # Only add if different from last word in buffer or timeout
+                if predicted_word != last_word_in_buffer:
+                    self.sentence_buffers[session_id].append(predicted_word)
+                    logger.info(f"Added word '{predicted_word}' to sentence. Buffer: {self.sentence_buffers[session_id]}")
                     self.last_word_times[session_id] = current_time
-                    self.last_predictions[session_id] = predicted_word
+                
+                self.last_predictions[session_id] = predicted_word
+                
+                # Unlock after processing
+                asyncio.create_task(self._release_lock(session_id, 0.3))
+            else:
+                self.last_predictions[session_id] = predicted_word
             
-            # Build current sentence
-            sentence = " ".join(self.sentence_buffers.get(session_id, []))
+            # Build current sentence (limit to last 15 words)
+            full_sentence = " ".join(self.sentence_buffers.get(session_id, []))
+            words = full_sentence.split()
+            if len(words) > 15:
+                words = words[-15:]  # Keep only last 15 words
+                self.sentence_buffers[session_id] = words
             
-            # Get alternative predictions
+            display_sentence = " ".join(words)
+            
             alternatives = []
             if model is not None and confidence_value < 0.85 and confidence_value > 0.3:
                 with torch.no_grad():
@@ -277,8 +321,11 @@ class SignLanguageProcessor:
             return {
                 "predicted_word": predicted_word,
                 "confidence_score": confidence_value,
-                "current_sentence": sentence,
-                "alternatives": alternatives
+                "current_sentence": full_sentence,
+                "full_sentence": full_sentence,
+                "alternatives": alternatives,
+                "consecutive_count": self.consecutive_predictions.get(session_id, 0),
+                "buffer_length": len(self.sentence_buffers.get(session_id, []))
             }
             
         except Exception as e:
@@ -287,8 +334,32 @@ class SignLanguageProcessor:
                 "predicted_word": "",
                 "confidence_score": 0,
                 "current_sentence": "",
+                "full_sentence": "",
                 "alternatives": []
             }
+    
+    def reset_sentence(self, session_id: str):
+        """Reset sentence buffer after user sends message"""
+        self.waiting_for_reset[session_id] = True
+        # Clear the buffer
+        self.sentence_buffers[session_id] = []
+        self.last_predictions[session_id] = ""
+        self.consecutive_predictions[session_id] = 0
+        self.last_word_times[session_id] = time.time()
+        logger.info(f"Sentence buffer reset for session {session_id}")
+        # Clear waiting flag after reset
+        asyncio.create_task(self._clear_waiting_flag(session_id, 0.1))
+    
+    async def _clear_waiting_flag(self, session_id: str, delay: float):
+        """Clear waiting flag after reset"""
+        await asyncio.sleep(delay)
+        self.waiting_for_reset[session_id] = False
+        logger.info(f"Session {session_id} ready for new sentence")
+
+    async def _release_lock(self, session_id: str, delay: float):
+        """Release prediction lock after delay"""
+        await asyncio.sleep(delay)
+        self.prediction_lock[session_id] = False
     
     def clear_session(self, session_id: str):
         """Clear session data"""
@@ -296,8 +367,11 @@ class SignLanguageProcessor:
         self.sentence_buffers.pop(session_id, None)
         self.last_word_times.pop(session_id, None)
         self.last_predictions.pop(session_id, None)
+        self.consecutive_predictions.pop(session_id, None)
         self.frame_counters.pop(session_id, None)
         self.last_bounding_boxes.pop(session_id, None)
+        self.last_processed_word.pop(session_id, None)
+        self.prediction_lock.pop(session_id, None)
 
 # Global processor
 processor = SignLanguageProcessor()
@@ -334,6 +408,9 @@ manager = ConnectionManager()
 @router.websocket("/stream")
 async def sign_language_stream(websocket: WebSocket):
     session_id = None
+    last_sent_sentence = ""
+    last_sent_time = 0
+    min_send_interval = 0.3  # Only send updates every 300ms
     
     try:
         # Accept connection
@@ -410,7 +487,7 @@ async def sign_language_stream(websocket: WebSocket):
                                 "error": result["error"]
                             })
                         else:
-                            # Send bounding box update
+                            # Send bounding box update (only when changed)
                             bounding_box = result.get("bounding_box")
                             if bounding_box and bounding_box != last_bounding_box:
                                 last_bounding_box = bounding_box
@@ -420,30 +497,44 @@ async def sign_language_stream(websocket: WebSocket):
                                     "hand_detected": result.get("hand_detected", False)
                                 })
                             
-                            # Send text stream update (partial)
-                            if result.get("current_sentence"):
+                            # Send text stream update with debouncing
+                            current_sentence = result.get("current_sentence", "")
+                            if (current_sentence and 
+                                (current_sentence != last_sent_sentence or 
+                                current_time - last_sent_time >= min_send_interval)):
+                                
+                                last_sent_sentence = current_sentence
+                                last_sent_time = current_time
+                                
                                 await manager.send_json(session_id, {
                                     "event": "text_streamed",
-                                    "partial_text": result["current_sentence"],
+                                    "partial_text": current_sentence,
                                     "confidence_score": result.get("confidence_score", 0),
                                     "hand_detected": result.get("hand_detected", False),
                                     "sequence_length": result.get("sequence_length", 0),
-                                    "bounding_box": bounding_box
+                                    "bounding_box": bounding_box,
+                                    "buffer_length": result.get("buffer_length", 0)
                                 })
                             
-                            # Send complete inference result
+                            # Send complete inference result only for new words
                             if (result.get("predicted_word") and 
-                                result.get("confidence_score", 0) >= CONFIDENCE_THRESHOLD):
-                                await manager.send_json(session_id, {
-                                    "event": "inference_complete",
-                                    "raw_prediction_text": result["predicted_word"],
-                                    "final_confidence_score": result["confidence_score"],
-                                    "full_sentence": result.get("current_sentence", ""),
-                                    "alternatives": result.get("alternatives", []),
-                                    "bounding_box": bounding_box
-                                })
+                                result.get("confidence_score", 0) >= CONFIDENCE_THRESHOLD and
+                                result.get("consecutive_count", 0) >= 3):
+                                
+                                # Don't resend the same inference multiple times
+                                if result.get("predicted_word") != last_sent_sentence:
+                                    await manager.send_json(session_id, {
+                                        "event": "inference_complete",
+                                        "raw_prediction_text": result["predicted_word"],
+                                        "final_confidence_score": result["confidence_score"],
+                                        "full_sentence": current_sentence,
+                                        "alternatives": result.get("alternatives", []),
+                                        "bounding_box": bounding_box,
+                                        "buffer_length": result.get("buffer_length", 0)
+                                    })
                     
-                    if frame_count % 50 == 0:
+                    # Send heartbeat every 100 frames
+                    if frame_count % 100 == 0:
                         await manager.send_json(session_id, {
                             "event": "heartbeat",
                             "frame_count": frame_count,
@@ -462,6 +553,7 @@ async def sign_language_stream(websocket: WebSocket):
                             })
                         elif text_data.get("type") == "reset":
                             processor.clear_session(session_id)
+                            last_sent_sentence = ""
                             await manager.send_json(session_id, {
                                 "event": "session_reset",
                                 "message": "Session has been reset"
@@ -499,3 +591,15 @@ async def sign_health():
         "confidence_threshold": CONFIDENCE_THRESHOLD,
         "active_connections": len(manager.active_connections)
     }
+
+@router.post("/reset/{session_id}")
+async def reset_session(session_id: str):
+    """Reset session buffer"""
+    processor.clear_session(session_id)
+    return {"status": "reset", "session_id": session_id}
+
+@router.post("/clear/{session_id}")
+async def clear_session_endpoint(session_id: str):
+    """Completely clear session"""
+    processor.clear_session(session_id)
+    return {"status": "cleared", "session_id": session_id}
