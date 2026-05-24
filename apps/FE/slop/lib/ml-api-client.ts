@@ -38,8 +38,9 @@ export class MLAPIClient {
                 occlusion_detected: data.occlusion_detected,
                 frame_confidence: data.confidence_score
               });
-              if (data.partial_text) {
-                onPartialText(data.partial_text, data.confidence_score);
+              if (data.partial_text || data.translated_partial_text) {
+                const partialText = data.translated_partial_text || data.partial_text;
+                onPartialText(partialText, data.confidence_score);
               }
               break;
             case 'inference_complete':

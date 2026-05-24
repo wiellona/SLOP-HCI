@@ -40,6 +40,12 @@ interface StaffInfo {
   email: string;
 }
 
+type StreamMessagePayload = {
+  text: string;
+  sender_type: "CUSTOMER" | "STAFF";
+  confidence?: number;
+};
+
 export default function CustomerPage() {
   // State
   const [showEditPanel, setShowEditPanel] = useState(false);
@@ -66,7 +72,7 @@ export default function CustomerPage() {
   const frameIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const SENTENCE_GAP_MS = 2000;
+  const SENTENCE_GAP_MS = 1200;
   const POLL_INTERVAL_MS = 3000;
 
   // Load active session
@@ -105,33 +111,49 @@ export default function CustomerPage() {
 
     wsRef.current = new WebSocket(wsUrl);
 
-  wsRef.current.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log('WebSocket message received:', data);
-      
-      switch (data.event) {
-        case 'connected':
-          console.log('Connected to sign service:', data.message);
-          break;
-        case 'text_streamed':
-          if (data.partial_text) {
-            setCurrentTranslation(data.partial_text);
-            setConfidence(data.confidence_score || 0);
-            setIsTracking(data.hand_detected || false);
+    wsRef.current.onopen = () => {
+      console.log("WebSocket connected, sending session token...");
+      // Kirim session token setelah connection terbuka
+      const sessionToken = sessionId || "customer_session_" + Date.now();
+      wsRef.current?.send(JSON.stringify({ session_token: sessionToken }));
+      setIsWebSocketConnected(true);
+    };
+
+    wsRef.current.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log("WebSocket message received:", data);
+
+        switch (data.event) {
+          case "connected":
+            console.log("Connected to sign service:", data.message);
+            break;
+          case "text_streamed":
+            if (data.partial_text || data.translated_partial_text) {
+              const partialText =
+                data.translated_partial_text || data.partial_text || "";
+              setCurrentTranslation(partialText);
+              setConfidence(data.confidence_score || 0);
+              setIsTracking(data.hand_detected || false);
+            }
             if (data.bounding_box) {
               setBoundingBox(data.bounding_box);
-              setOcclusionDetected(data.bounding_box.is_occluded || false);
+              setOcclusionDetected(Boolean(data.bounding_box.is_occluded));
+            } else {
+              setBoundingBox(null);
+              setOcclusionDetected(false);
             }
-          }
-          break;
-        case 'inference_complete':
-          handleInferenceComplete(data);
-          break;
-        case 'error':
-          console.error('Inference error:', data.error);
-          setIsProcessing(false);
-          break;
+            break;
+          case "inference_complete":
+            handleInferenceComplete(data);
+            break;
+          case "error":
+            console.error("Inference error:", data.error);
+            setIsProcessing(false);
+            break;
+        }
+      } catch (err) {
+        console.error("Failed to parse message:", err);
       }
     };
 
@@ -154,35 +176,36 @@ export default function CustomerPage() {
 
   const handleInferenceComplete = useCallback(
     (data: any) => {
-      const word = data.raw_prediction_text;
+      const word = data.translated_word || data.raw_prediction_text || "";
+      const translatedSentence =
+        data.translated_sentence || data.full_sentence || "";
       const now = Date.now();
 
       console.log(
         `Inference complete: "${word}" with confidence ${data.final_confidence_score}`,
       );
 
-    if (data.bounding_box) {
-      setBoundingBox(data.bounding_box);
-      setOcclusionDetected(data.bounding_box.is_occluded || false);
-    }
-    if (now - lastWordTime > SENTENCE_GAP_MS) {
-      setSentenceBuffer([word]);
-      setCurrentTranslation(word);
-    } else {
-      const newBuffer = [...sentenceBuffer, word];
-      setSentenceBuffer(newBuffer);
-      setCurrentTranslation(newBuffer.join(' '));
-    }
-    setLastWordTime(now);
-    setConfidence(data.final_confidence_score || 0);
-    setIsProcessing(false);
+      if (translatedSentence) {
+        setCurrentTranslation(translatedSentence);
+        setSentenceBuffer(translatedSentence.split(" "));
+      } else if (now - lastWordTime > SENTENCE_GAP_MS) {
+        setSentenceBuffer([word]);
+        setCurrentTranslation(word);
+      } else {
+        const newBuffer = [...sentenceBuffer, word];
+        setSentenceBuffer(newBuffer);
+        setCurrentTranslation(newBuffer.join(" "));
+      }
+      setLastWordTime(now);
+      setConfidence(data.final_confidence_score || 0);
+      setIsProcessing(false);
 
       if (
         data.final_confidence_score < 0.85 &&
         data.alternatives &&
         data.alternatives.length > 0
       ) {
-        setAlternatives(data.alternatives);
+        setAlternatives(data.translated_alternatives || data.alternatives);
       } else {
         setAlternatives([]);
       }
@@ -192,7 +215,7 @@ export default function CustomerPage() {
 
   const { isConnected: wsConnected, sendMessage: wsSendMessage } = useWebSocket(
     sessionId,
-    useCallback((newMessage: Message) => {
+    useCallback((newMessage: APIMessage) => {
       // Handle incoming messages via WebSocket
       setConversation((prev) => [
         ...prev,
@@ -272,7 +295,7 @@ export default function CustomerPage() {
           console.error("Failed to send frame:", err);
         }
       }
-    }, 100);
+    }, 60);
   }, []);
 
   const handleEditComplete = useCallback((newText: string) => {
@@ -455,10 +478,10 @@ export default function CustomerPage() {
             />
           </div>
 
-          <div style={{ flexShrink: 0, marginTop: 'auto' }}>
-            <CafeActionButtons 
-              onSend={handleSend} 
-              disabled={!currentTranslation || isProcessing || !sessionId} 
+          <div style={{ flexShrink: 0, marginTop: "auto" }}>
+            <CafeActionButtons
+              onSend={handleSend}
+              disabled={!currentTranslation || isProcessing || !sessionId}
             />
           </div>
         </div>

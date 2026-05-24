@@ -87,8 +87,41 @@ def compute_motion_score(
     if prev_features is None or curr_features is None:
         return 0.0
 
-    diff = np.abs(curr_features - prev_features)
-    return float(np.mean(diff))
+    # Jika ukurannya bukan matriks 2 tangan (126), gunakan cara biasa
+    if len(curr_features) != FEATURE_SIZE_TWO_HANDS:
+        diff = np.abs(curr_features - prev_features)
+        return float(np.mean(diff))
+
+    # Memisahkan fitur tangan kanan (0-63) dan kiri (63-126)
+    half = FEATURE_SIZE_TWO_HANDS // 2
+    
+    prev_right = prev_features[:half]
+    prev_left = prev_features[half:]
+    
+    curr_right = curr_features[:half]
+    curr_left = curr_features[half:]
+    
+    # Cek apakah tangan tersebut eksis (jumlah nilainya > 0)
+    right_exists_prev = np.sum(np.abs(prev_right)) > 1e-6
+    right_exists_curr = np.sum(np.abs(curr_right)) > 1e-6
+    
+    left_exists_prev = np.sum(np.abs(prev_left)) > 1e-6
+    left_exists_curr = np.sum(np.abs(curr_left)) > 1e-6
+    
+    diffs = []
+    
+    # Hanya hitung selisih motion JIKA tangan tersebut eksis di KEDUA frame berurutan
+    if right_exists_prev and right_exists_curr:
+        diffs.extend(np.abs(curr_right - prev_right))
+    
+    if left_exists_prev and left_exists_curr:
+        diffs.extend(np.abs(curr_left - prev_left))
+        
+    # Jika tidak ada riwayat tangan yang konsisten, anggap tidak ada pergerakan berbahaya (0.0)
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
 
 
 class PredictionFilter:

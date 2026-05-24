@@ -22,10 +22,17 @@ SMOOTHING_WINDOW = 5
 STABLE_FRAMES = 3
 COOLDOWN_FRAMES = 10
 MOTION_THRESHOLD = 0.08
-NO_HAND_TIMEOUT_SEC = 3.0
+NO_HAND_TIMEOUT_SEC = 1.0
 
-USE_TWO_HANDS = False
-REQUIRE_BOTH_HANDS = False
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y"}
+
+
+USE_TWO_HANDS = _env_flag("SIGN_USE_TWO_HANDS", False) # Set to True if your model was trained with two-hand features
+REQUIRE_BOTH_HANDS = _env_flag("SIGN_REQUIRE_BOTH_HANDS", False)
 FEATURE_SIZE = FEATURE_SIZE_TWO_HANDS if USE_TWO_HANDS else FEATURE_SIZE_ONE_HAND
 
 
@@ -86,7 +93,8 @@ def main() -> None:
                 require_both_hands=REQUIRE_BOTH_HANDS,
             )
         else:
-            normalized = normalize_hand_landmarks(results.right_hand_landmarks)
+            primary_hand = results.right_hand_landmarks or results.left_hand_landmarks
+            normalized = normalize_hand_landmarks(primary_hand)
 
         hand_detected = normalized is not None
 
@@ -115,14 +123,14 @@ def main() -> None:
                     if not sentence_words or sentence_words[-1] != predicted_word:
                         sentence_words.append(predicted_word)
 
-                display_word = predicted_word
+                display_word = " ".join(sentence_words) if sentence_words else predicted_word
                 display_conf = conf if conf is not None else 0.0
             else:
                 display_word = "Menunggu..."
                 display_conf = 0.0
 
             print(
-                "Terminal Output | Kata Dideteksi: [ "
+                "Terminal Output | Kalimat Sementara: [ "
                 f"{display_word} ] | Conf: {display_conf:.2f}     ",
                 end='\r'
             )

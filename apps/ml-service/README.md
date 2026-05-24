@@ -20,6 +20,13 @@ Ubah video mentah (.mp4) menjadi matriks koordinat (.npy) menggunakan MediaPipe.
 python preprocess_videos.py
 ```
 
+Konfigurasi dua tangan (opsional) dapat diatur lewat environment:
+
+```bash
+set SIGN_USE_TWO_HANDS=true
+set SIGN_REQUIRE_BOTH_HANDS=false
+```
+
 Hasilnya akan ada di folder data/wlasl_npy/. Setelah selesai, ZIP folder tersebut bersama file train.py dan folder app/ untuk diunggah ke Colab.
 
 ## 🧠 Fase 3: Training (Google Colab)
@@ -53,6 +60,24 @@ Sel 4: Jalankan Training
 
 ```py
 !PYTHONPATH=. python train.py
+```
+
+Hyperparameter dan fine-tuning minimal dapat diatur lewat environment:
+
+```bash
+set SIGN_USE_TWO_HANDS=true
+set SIGN_FREEZE_ENCODER=true
+set SIGN_PRETRAINED_PATH=app/models/weights/siformer_wlasl_cafe.pth
+set SIGN_EPOCHS=50
+set SIGN_LR=0.001
+```
+
+## 📊 Benchmark & Metrik
+
+Gunakan skrip benchmark untuk mengecek akurasi dan latency:
+
+```bash
+python scripts/benchmark_sign.py --data-root data/wlasl_npy
 ```
 
 ## 🚀 Fase 4: Real-time Inference

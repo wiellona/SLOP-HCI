@@ -1,4 +1,6 @@
 [
+  "allergy",
+  "change",
   "coffee",
   "five",
   "four",
@@ -9,6 +11,7 @@
   "no",
   "one",
   "order",
+  "peanut butter",
   "please",
   "sugar",
   "tea",
@@ -16,5 +19,6 @@
   "three",
   "two",
   "want",
-  "water"
+  "water",
+  "with"
 ]

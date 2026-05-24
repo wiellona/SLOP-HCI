@@ -1,72 +1,79 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { apiClient, Message } from '@/lib/api-client';
+import { useEffect, useRef, useState, useCallback } from "react";
+import { io, Socket } from "socket.io-client";
+import { Message } from "@/lib/api-client";
 
 interface WebSocketMessage {
-  type: 'message' | 'typing' | 'session_ended' | 'session_created';
+  type: "message" | "typing" | "session_ended" | "session_created";
   data: any;
 }
 
-export function useWebSocket(sessionId: string | null, onMessage?: (message: Message) => void) {
+export function useWebSocket(
+  sessionId: string | null,
+  onMessage?: (message: Message) => void,
+) {
   const [isConnected, setIsConnected] = useState(false);
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<Socket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
   const connect = useCallback(() => {
     if (!sessionId) return;
 
-    const wsUrl = apiClient.getWebSocketUrl(sessionId);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    const socketUrl =
+      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+    const socket = io(socketUrl, {
+      transports: ["websocket"],
+      query: { sessionId },
+    });
+    wsRef.current = socket;
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
+    socket.on("connect", () => {
+      console.log("Socket connected");
       setIsConnected(true);
-      // Authenticate
-      ws.send(JSON.stringify({
-        type: 'auth',
-        token: localStorage.getItem('staff_token'),
-      }));
-    };
+      socket.emit("join_session", {
+        sessionToken: sessionId,
+        role: "CUSTOMER",
+      });
+    });
 
-    ws.onmessage = (event) => {
-      try {
-        const data: WebSocketMessage = JSON.parse(event.data);
-        switch (data.type) {
-          case 'message':
-            if (onMessage) onMessage(data.data);
-            break;
-          case 'typing':
-            setTypingUsers((prev) => {
-              const newSet = new Set(prev);
-              if (data.data.is_typing) {
-                newSet.add(data.data.user);
-              } else {
-                newSet.delete(data.data.user);
-              }
-              return newSet;
-            });
-            break;
-          case 'session_ended':
-            console.log('Session ended by other party');
-            break;
-        }
-      } catch (err) {
-        console.error('Failed to parse WebSocket message:', err);
+    socket.on("new_message", (data: any) => {
+      if (onMessage) {
+        onMessage({
+          id: data.id ?? `msg_${Date.now()}`,
+          text: data.content ?? data.text ?? "",
+          sender_type: data.sender?.role === "CUSTOMER" ? "CUSTOMER" : "STAFF",
+          confidence: data.confidence ?? undefined,
+          created_at: (
+            data.sent_at ??
+            data.created_at ??
+            new Date().toISOString()
+          ).toString(),
+        });
       }
-    };
+    });
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setIsConnected(false);
-    };
+    socket.on("typing", (data: any) => {
+      setTypingUsers((prev) => {
+        const newSet = new Set(prev);
+        if (data?.is_typing) {
+          newSet.add(data.user);
+        } else {
+          newSet.delete(data.user);
+        }
+        return newSet;
+      });
+    });
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
+    socket.on("disconnect", () => {
+      console.log("Socket disconnected");
       setIsConnected(false);
-      // Attempt to reconnect after 3 seconds
       reconnectTimeoutRef.current = setTimeout(() => connect(), 3000);
-    };
+    });
+
+    socket.on("connect_error", (error) => {
+      console.error("Socket error:", error);
+      setIsConnected(false);
+    });
   }, [sessionId, onMessage]);
 
   useEffect(() => {
@@ -82,22 +89,33 @@ export function useWebSocket(sessionId: string | null, onMessage?: (message: Mes
   }, [connect]);
 
   const sendTyping = useCallback((isTyping: boolean) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'typing',
+    if (wsRef.current?.connected) {
+      wsRef.current.emit("typing", {
         is_typing: isTyping,
-      }));
+      });
     }
   }, []);
 
-  const sendMessage = useCallback((message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'message',
-        data: message,
-      }));
-    }
-  }, []);
+  const sendMessage = useCallback(
+    (message: any) => {
+      if (wsRef.current?.connected) {
+        const content = message?.content ?? message?.text ?? "";
+        if (!content) return;
+
+        wsRef.current.emit("send_message", {
+          sessionToken: sessionId,
+          senderId:
+            message?.senderId ??
+            `customer_${sessionId ?? Date.now().toString()}`,
+          role: message?.role ?? "CUSTOMER",
+          content,
+          modality: message?.modality ?? "TEXT",
+          confidence: message?.confidence,
+        });
+      }
+    },
+    [sessionId],
+  );
 
   return {
     isConnected,
