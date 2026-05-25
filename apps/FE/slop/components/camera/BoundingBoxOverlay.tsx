@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 interface BoundingBox {
   x: number;
@@ -23,18 +23,21 @@ export function BoundingBoxOverlay({
   if (!boundingBox) return null;
 
   const getBoxColor = () => {
-    if (occlusionDetected) return 'border-[#D4A843]';
-    if (confidence >= 0.9) return 'border-[#6B8C42]';
-    if (confidence >= 0.7) return 'border-[#D4A843]';
-    return 'border-[#B85C4A]';
+    if (occlusionDetected) return "border-[#D4A843]";
+    if (confidence >= 0.9) return "border-[#6B8C42]";
+    if (confidence >= 0.7) return "border-[#D4A843]";
+    return "border-[#B85C4A]";
   };
 
-  const getBoxStyle = () => ({
-    left: `${boundingBox.x * 100}%`,
-    top: `${boundingBox.y * 100}%`,
-    width: `${boundingBox.width * 100}%`,
-    height: `${boundingBox.height * 100}%`,
-  });
+  const getBoxStyle = () => {
+    const mirroredX = 1 - boundingBox.x - boundingBox.width;
+    return {
+      left: `${mirroredX * 100}%`,
+      top: `${boundingBox.y * 100}%`,
+      width: `${boundingBox.width * 100}%`,
+      height: `${boundingBox.height * 100}%`,
+    };
+  };
 
   return (
     <div

@@ -14,10 +14,10 @@ class Settings(BaseSettings):
     sign_use_two_hands: bool = True
     sign_require_both_hands: bool = False
     sign_sequence_length: int = 30
-    sign_confidence_threshold: float = 0.7
-    sign_inference_interval_ms: int = 120
-    sign_min_detection_confidence: float = 0.5
-    sign_min_tracking_confidence: float = 0.5
+    sign_confidence_threshold: float = 0.65
+    sign_inference_interval_ms: int = 33
+    sign_min_detection_confidence: float = 0.7
+    sign_min_tracking_confidence: float = 0.7
     sign_device: str | None = None
 
 def get_settings():

@@ -71,8 +71,12 @@ export default function CustomerPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const frameIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const shouldReconnectRef = useRef(true);
+  const sentenceBufferRef = useRef<string[]>([]);
+  const lastWordTimeRef = useRef<number>(Date.now());
 
   const SENTENCE_GAP_MS = 1200;
+  const SEQUENCE_LENGTH = 30;
   const POLL_INTERVAL_MS = 3000;
 
   // Load active session
@@ -97,10 +101,15 @@ export default function CustomerPage() {
     } catch (err) {
       console.error("Failed to load session:", err);
     }
+    shouldReconnectRef.current = true;
   }, []);
 
   // WebSocket connection
   const initWebSocket = useCallback(() => {
+    if (!sessionId) {
+      return;
+    }
+
     const mlBaseUrl =
       process.env.NEXT_PUBLIC_ML_WS_URL ||
       process.env.NEXT_PUBLIC_ML_SERVICE_URL ||
@@ -113,9 +122,7 @@ export default function CustomerPage() {
 
     wsRef.current.onopen = () => {
       console.log("WebSocket connected, sending session token...");
-      // Kirim session token setelah connection terbuka
-      const sessionToken = sessionId || "customer_session_" + Date.now();
-      wsRef.current?.send(JSON.stringify({ session_token: sessionToken }));
+      wsRef.current?.send(JSON.stringify({ session_token: sessionId }));
       setIsWebSocketConnected(true);
     };
 
@@ -128,14 +135,47 @@ export default function CustomerPage() {
           case "connected":
             console.log("Connected to sign service:", data.message);
             break;
-          case "text_streamed":
-            if (data.partial_text || data.translated_partial_text) {
-              const partialText =
-                data.translated_partial_text || data.partial_text || "";
-              setCurrentTranslation(partialText);
-              setConfidence(data.confidence_score || 0);
-              setIsTracking(data.hand_detected || false);
+          case "text_streamed": {
+            const draftSentence =
+              data.translated_sentence ||
+              data.current_sentence ||
+              data.full_sentence ||
+              "";
+
+            if (data.hand_detected && draftSentence) {
+              const tokens = draftSentence.split(" ").filter(Boolean);
+              const prev = sentenceBufferRef.current;
+              let nextBuffer = prev;
+
+              if (prev.length === 0) {
+                nextBuffer = tokens;
+              } else if (tokens.length > prev.length) {
+                nextBuffer = [...prev, ...tokens.slice(prev.length)];
+              } else {
+                nextBuffer = prev;
+              }
+
+              if (nextBuffer !== prev) {
+                sentenceBufferRef.current = nextBuffer;
+                setSentenceBuffer(nextBuffer);
+              }
+
+              setCurrentTranslation(sentenceBufferRef.current.join(" "));
+              const now = Date.now();
+              lastWordTimeRef.current = now;
+              setLastWordTime(now);
             }
+
+            setConfidence(data.confidence_score || 0);
+            setIsTracking(data.hand_detected || false);
+            const sequenceLength =
+              typeof data.sequence_length === "number"
+                ? data.sequence_length
+                : 0;
+            setIsProcessing(
+              Boolean(data.hand_detected && sequenceLength >= SEQUENCE_LENGTH),
+            );
+
             if (data.bounding_box) {
               setBoundingBox(data.bounding_box);
               setOcclusionDetected(Boolean(data.bounding_box.is_occluded));
@@ -144,6 +184,7 @@ export default function CustomerPage() {
               setOcclusionDetected(false);
             }
             break;
+          }
           case "inference_complete":
             handleInferenceComplete(data);
             break;
@@ -158,13 +199,16 @@ export default function CustomerPage() {
     };
 
     wsRef.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
+      console.warn("WebSocket sign stream error:", error);
       setIsWebSocketConnected(false);
     };
 
     wsRef.current.onclose = () => {
       console.log("WebSocket closed, attempting to reconnect...");
       setIsWebSocketConnected(false);
+      if (!shouldReconnectRef.current) {
+        return;
+      }
       // Reconnect after 3 seconds
       setTimeout(() => {
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
@@ -174,44 +218,33 @@ export default function CustomerPage() {
     };
   }, [sessionId]);
 
-  const handleInferenceComplete = useCallback(
-    (data: any) => {
-      const word = data.translated_word || data.raw_prediction_text || "";
-      const translatedSentence =
-        data.translated_sentence || data.full_sentence || "";
-      const now = Date.now();
+  const handleInferenceComplete = useCallback((data: any) => {
+    const translatedSentence =
+      data.translated_sentence || data.full_sentence || "";
 
-      console.log(
-        `Inference complete: "${word}" with confidence ${data.final_confidence_score}`,
-      );
+    console.log(
+      `Inference complete with confidence ${data.final_confidence_score}`,
+    );
 
-      if (translatedSentence) {
-        setCurrentTranslation(translatedSentence);
-        setSentenceBuffer(translatedSentence.split(" "));
-      } else if (now - lastWordTime > SENTENCE_GAP_MS) {
-        setSentenceBuffer([word]);
-        setCurrentTranslation(word);
-      } else {
-        const newBuffer = [...sentenceBuffer, word];
-        setSentenceBuffer(newBuffer);
-        setCurrentTranslation(newBuffer.join(" "));
-      }
-      setLastWordTime(now);
-      setConfidence(data.final_confidence_score || 0);
-      setIsProcessing(false);
+    if (translatedSentence) {
+      const nextBuffer = translatedSentence.split(" ").filter(Boolean);
+      sentenceBufferRef.current = nextBuffer;
+      setCurrentTranslation(translatedSentence);
+      setSentenceBuffer(nextBuffer);
+    }
+    setConfidence(data.final_confidence_score || 0);
+    setIsProcessing(false);
 
-      if (
-        data.final_confidence_score < 0.85 &&
-        data.alternatives &&
-        data.alternatives.length > 0
-      ) {
-        setAlternatives(data.translated_alternatives || data.alternatives);
-      } else {
-        setAlternatives([]);
-      }
-    },
-    [lastWordTime, sentenceBuffer, SENTENCE_GAP_MS],
-  );
+    if (
+      data.final_confidence_score < 0.85 &&
+      data.alternatives &&
+      data.alternatives.length > 0
+    ) {
+      setAlternatives(data.translated_alternatives || data.alternatives);
+    } else {
+      setAlternatives([]);
+    }
+  }, []);
 
   const { isConnected: wsConnected, sendMessage: wsSendMessage } = useWebSocket(
     sessionId,
@@ -245,6 +278,7 @@ export default function CustomerPage() {
     setConversation((prev) => [...prev, tempMessage]);
     setCurrentTranslation("");
     setSentenceBuffer([]);
+    sentenceBufferRef.current = [];
     setAlternatives([]);
 
     try {
@@ -295,30 +329,37 @@ export default function CustomerPage() {
           console.error("Failed to send frame:", err);
         }
       }
-    }, 60);
+    }, 33);
   }, []);
 
   const handleEditComplete = useCallback((newText: string) => {
     setCurrentTranslation(newText);
-    setSentenceBuffer(newText.split(" "));
+    const nextBuffer = newText.split(" ").filter(Boolean);
+    sentenceBufferRef.current = nextBuffer;
+    setSentenceBuffer(nextBuffer);
     setShowEditPanel(false);
   }, []);
 
   const handleSuggestionClick = useCallback((suggestion: string) => {
     setCurrentTranslation(suggestion);
-    setSentenceBuffer(suggestion.split(" "));
+    const nextBuffer = suggestion.split(" ").filter(Boolean);
+    sentenceBufferRef.current = nextBuffer;
+    setSentenceBuffer(nextBuffer);
     setAlternatives([]);
   }, []);
 
   const handleRecommendationClick = useCallback((question: string) => {
     setCurrentTranslation(question);
-    setSentenceBuffer(question.split(" "));
+    const nextBuffer = question.split(" ").filter(Boolean);
+    sentenceBufferRef.current = nextBuffer;
+    setSentenceBuffer(nextBuffer);
   }, []);
 
   const resetChat = useCallback(() => {
     setConversation([]);
     setCurrentTranslation("");
     setSentenceBuffer([]);
+    sentenceBufferRef.current = [];
     setAlternatives([]);
   }, []);
 
@@ -372,12 +413,15 @@ export default function CustomerPage() {
   }, [loadActiveSession, sessionId]);
 
   useEffect(() => {
-    initWebSocket();
+    if (sessionId) {
+      initWebSocket();
+    }
     return () => {
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
       if (wsRef.current) wsRef.current.close();
+      shouldReconnectRef.current = false;
     };
-  }, [initWebSocket]);
+  }, [initWebSocket, sessionId]);
 
   useEffect(() => {
     if (isCameraActive && isWebSocketConnected) {
@@ -406,12 +450,12 @@ export default function CustomerPage() {
   };
 
   const getCameraStatusText = () => {
-    if (!isTracking) return "Tidak ada tangan terdeteksi";
-    if (occlusionDetected) return "Tangan terdeteksi - keluar dari frame";
-    if (confidence >= 0.9) return "Gesture terdeteksi dengan jelas";
-    if (confidence >= 0.7) return "Gesture terdeteksi - keyakinan sedang";
-    return "Gesture tidak terdeteksi dengan jelas";
+    if (!isTracking) return "Menunggu...";
+    if (isProcessing) return "Membaca gerakan...";
+    return "Mengumpulkan frame...";
   };
+
+  const draftTranslation = currentTranslation || sentenceBuffer.join(" ");
 
   return (
     <div style={{ minHeight: "100vh", background: "#f8eddb" }}>
@@ -426,11 +470,11 @@ export default function CustomerPage() {
       <div
         style={{
           display: "grid",
-          height: "calc(100vh - 73px)",
-          gridTemplateColumns: "1.6fr 1fr",
-          gap: 12,
-          padding: 12,
-          overflow: "auto",
+          height: "calc(100dvh - 73px)",
+          gridTemplateColumns: "minmax(0, 1.35fr) minmax(320px, 0.95fr)",
+          gap: 10,
+          padding: 10,
+          overflow: "hidden",
         }}
       >
         {/* Left Section */}
@@ -438,12 +482,13 @@ export default function CustomerPage() {
           style={{
             display: "flex",
             flexDirection: "column",
-            flexWrap: "wrap",
             minHeight: 0,
-            gap: 10,
+            height: "100%",
+            gap: 8,
+            overflow: "hidden",
           }}
         >
-          <div style={{ flex: "auto", minHeight: 200 }}>
+          <div style={{ flex: "1 1 auto", minHeight: 0 }}>
             <CafeCameraFeed
               webcamRef={webcamRef}
               isActive={isCameraActive}
@@ -462,32 +507,45 @@ export default function CustomerPage() {
             </CafeCameraFeed>
           </div>
 
-          <div style={{ flexShrink: 1, marginTop: "auto" }}>
-            <CafeTranslationPreview
-              translation={currentTranslation}
-              isProcessing={isProcessing}
-              onEdit={() => setShowEditPanel(true)}
-            />
-          </div>
-
-          <div style={{ flexShrink: 1 }}>
+          <div style={{ flex: "0 0 auto" }}>
             <CafeSuggestionChips
-              currentWord={currentTranslation}
+              currentWord={draftTranslation}
               suggestions={alternatives}
               onSelect={handleSuggestionClick}
             />
           </div>
 
-          <div style={{ flexShrink: 0, marginTop: "auto" }}>
+          <div
+            style={{
+              marginTop: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              flex: "0 0 auto",
+            }}
+          >
+            <CafeTranslationPreview
+              translation={draftTranslation}
+              isProcessing={isProcessing}
+              onEdit={() => setShowEditPanel(true)}
+            />
             <CafeActionButtons
               onSend={handleSend}
-              disabled={!currentTranslation || isProcessing || !sessionId}
+              disabled={!draftTranslation || isProcessing || !sessionId}
             />
           </div>
         </div>
 
         {/* Right Section */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
           <CafeChatHistory
             messages={conversation}
             emptyMessage="Belum ada pesan"

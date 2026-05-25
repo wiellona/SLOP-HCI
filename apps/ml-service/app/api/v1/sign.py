@@ -21,6 +21,8 @@ from app.core.config import get_settings
 from app.hand_preprocess import (
     FEATURE_SIZE_ONE_HAND,
     FEATURE_SIZE_TWO_HANDS,
+    PredictionFilter,
+    compute_motion_score,
     normalize_hand_landmarks,
     normalize_two_hands,
 )
@@ -206,6 +208,13 @@ SEQUENCE_LENGTH = settings.sign_sequence_length
 CONFIDENCE_THRESHOLD = settings.sign_confidence_threshold
 REQUIRE_BOTH_HANDS = settings.sign_require_both_hands
 
+# Mirror main_inference.py filtering defaults for gesture stability.
+FILTER_WINDOW_SIZE = 5
+FILTER_MIN_CONFIDENCE = 0.65
+FILTER_STABLE_FRAMES = 3
+FILTER_COOLDOWN_FRAMES = 10
+FILTER_MOTION_THRESHOLD = 0.08
+
 logger.info(f"Number of classes: {NUM_CLASSES}")
 logger.info(f"Label map: {LABEL_MAP}")
 
@@ -271,6 +280,8 @@ class SignLanguageProcessor:
         self.no_hand_timeout_sec = 1.0
         self.frame_counters: Dict[str, int] = {}
         self.last_bounding_boxes: Dict[str, Optional[dict]] = {}
+        self.prediction_filters: Dict[str, PredictionFilter] = {}
+        self.prev_features: Dict[str, Optional[np.ndarray]] = {}
         
     def get_or_create_sequence(self, session_id: str) -> deque:
         if session_id not in self.frame_sequences:
@@ -281,6 +292,14 @@ class SignLanguageProcessor:
             self.last_predictions[session_id] = ""
             self.frame_counters[session_id] = 0
             self.last_bounding_boxes[session_id] = None
+            self.prediction_filters[session_id] = PredictionFilter(
+                window_size=FILTER_WINDOW_SIZE,
+                min_confidence=FILTER_MIN_CONFIDENCE,
+                stable_frames=FILTER_STABLE_FRAMES,
+                cooldown_frames=FILTER_COOLDOWN_FRAMES,
+                motion_threshold=FILTER_MOTION_THRESHOLD,
+            )
+            self.prev_features[session_id] = None
         return self.frame_sequences[session_id]
 
     def finalize_sentence(self, session_id: str) -> Optional[dict]:
@@ -297,6 +316,10 @@ class SignLanguageProcessor:
         sequence = self.frame_sequences.get(session_id)
         if sequence is not None:
             sequence.clear()
+
+        if session_id in self.prediction_filters:
+            self.prediction_filters[session_id].reset()
+        self.prev_features[session_id] = None
 
         return {
             "sentence_finalized": True,
@@ -419,6 +442,20 @@ class SignLanguageProcessor:
             )
             hand_detected = hand_count > 0
 
+            sequence = self.get_or_create_sequence(session_id)
+
+            motion_score = None
+            if hand_detected:
+                motion_score = compute_motion_score(
+                    self.prev_features.get(session_id),
+                    hand_features,
+                )
+                self.prev_features[session_id] = hand_features
+            else:
+                self.prev_features[session_id] = None
+                if session_id in self.prediction_filters:
+                    self.prediction_filters[session_id].reset()
+
             bboxes = []
             right_bbox = _landmarks_to_bbox(right_hand)
             if right_bbox:
@@ -430,8 +467,7 @@ class SignLanguageProcessor:
 
             if hand_detected:
                 self.last_hand_times[session_id] = time.time()
-            
-            sequence = self.get_or_create_sequence(session_id)
+
             if hand_detected:
                 sequence.append(hand_features)
             self.frame_counters[session_id] += 1
@@ -447,7 +483,7 @@ class SignLanguageProcessor:
             
             # Run inference only while a hand is visible.
             if hand_detected and len(sequence) == SEQUENCE_LENGTH:
-                inference_result = self.run_inference(sequence, session_id)
+                inference_result = self.run_inference(sequence, session_id, motion_score)
                 result.update(inference_result)
 
             if not hand_detected:
@@ -463,7 +499,12 @@ class SignLanguageProcessor:
             logger.error(f"Error processing frame: {e}", exc_info=True)
             return {"error": str(e)}
     
-    def run_inference(self, sequence: deque, session_id: str) -> dict:
+    def run_inference(
+        self,
+        sequence: deque,
+        session_id: str,
+        motion_score: Optional[float] = None,
+    ) -> dict:
         try:
             inference_start = time.perf_counter()
             sequence_matrix = np.asarray(sequence, dtype=np.float32)
@@ -472,6 +513,7 @@ class SignLanguageProcessor:
             confidence_value = 0.0
             predicted_index = None
             probabilities = None
+            probs_np: Optional[np.ndarray] = None
 
             if model is not None:
                 with torch.inference_mode():
@@ -480,34 +522,32 @@ class SignLanguageProcessor:
                     confidence, predicted_index = torch.max(probabilities, dim=1)
                     confidence_value = confidence.item()
                     predicted_index = predicted_index.item()
+                    probs_np = probabilities.detach().cpu().numpy().flatten()
 
-            if predicted_index is not None and predicted_index < len(LABEL_MAP):
-                predicted_word = LABEL_MAP[predicted_index]
+            prediction_filter = self.prediction_filters.get(session_id)
+            label_idx = None
+            filtered_conf = None
+            emit = False
+            if prediction_filter is not None:
+                label_idx, filtered_conf, emit = prediction_filter.update(
+                    probs_np,
+                    motion_score,
+                )
+
+            if label_idx is not None and label_idx < len(LABEL_MAP):
+                predicted_word = LABEL_MAP[label_idx]
             else:
                 predicted_word = ""
+
+            if filtered_conf is not None:
+                confidence_value = filtered_conf
+            elif probs_np is None:
                 confidence_value = 0.0
-            
-            # Update sentence buffer
-            current_time = time.time()
-            last_time = self.last_word_times.get(session_id, current_time)
-            last_pred = self.last_predictions.get(session_id, "")
-            
-            if confidence_value >= CONFIDENCE_THRESHOLD and predicted_word:
-                time_diff = current_time - last_time
-                
-                # Add to sentence buffer if different word or enough time passed
-                if predicted_word != last_pred or time_diff > self.sentence_gap_ms / 1000:
-                    if time_diff > self.sentence_gap_ms / 1000:
-                        # New sentence
-                        self.sentence_buffers[session_id] = [predicted_word]
-                    else:
-                        # Continue current sentence
-                        if (not self.sentence_buffers[session_id] or 
-                            self.sentence_buffers[session_id][-1] != predicted_word):
-                            self.sentence_buffers[session_id].append(predicted_word)
-                    
-                    self.last_word_times[session_id] = current_time
-                    self.last_predictions[session_id] = predicted_word
+
+            if emit and predicted_word:
+                if (not self.sentence_buffers[session_id] or
+                        self.sentence_buffers[session_id][-1] != predicted_word):
+                    self.sentence_buffers[session_id].append(predicted_word)
             
             sentence = " ".join(self.sentence_buffers[session_id])
 
