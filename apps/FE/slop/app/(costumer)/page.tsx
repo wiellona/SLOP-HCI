@@ -437,7 +437,7 @@ export default function CustomerPage() {
         style={{
           display: "grid",
           height: "calc(100vh - 73px)",
-          gridTemplateColumns: "minmax(0, 1.6fr) minmax(320px, 1fr)",
+          gridTemplateColumns: "minmax(0, 1.4fr) minmax(320px, 1fr)",
           gap: 12,
           padding: 12,
           overflow: "hidden",
